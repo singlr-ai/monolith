@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.standardapplied</groupId>
+    <artifactId>monolith-parent</artifactId>
+    <version>0.1.0</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>monolith-example-collab</artifactId>
+  <name>Monolith Example: Collab</name>
+  <description>End-to-end example: a live, multi-client task board built on the Monolith libraries.
+    A @PgQuery declares the live relational query; the reactive layer wakes subscribers when a
+    relevant row changes; the Helidon adapter pushes the fresh result over WebSockets. The app
+    registers its OWN HTTP and WebSocket routes, proving the libraries impose no framework or
+    routing of their own. Not published as a library artifact.</description>
+
+  <properties>
+    <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-runtime</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-reactive</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-helidon</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.helidon.webserver</groupId>
+      <artifactId>helidon-webserver-websocket</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>com.standardapplied</groupId>
+              <artifactId>monolith-codegen</artifactId>
+              <version>${project.version}</version>
+            </path>
+            <path>
+              <groupId>com.standardapplied</groupId>
+              <artifactId>monolith-api</artifactId>
+              <version>${project.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+      <!-- `mvn -pl examples/collab -am compile exec:exec` runs the server in a forked JVM with
+           native access enabled for libpq. Append a port with -Dexec.port=8099. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.5.0</version>
+        <configuration>
+          <executable>${java.home}/bin/java</executable>
+          <arguments>
+            <argument>--enable-native-access=ALL-UNNAMED</argument>
+            <argument>-classpath</argument>
+            <classpath/>
+            <argument>com.standardapplied.monolith.example.collab.CollabApp</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.standardapplied</groupId>
+    <artifactId>monolith-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>monolith-helidon</artifactId>
+  <name>Monolith Helidon Adapter</name>
+  <description>OPTIONAL adapter that bridges Monolith's reactive change feed to Helidon SE
+    WebSockets. Provides a ready-made WsListener that manages the live-query subscribe/push
+    lifecycle against a ReactiveHub. Monolith's core does not depend on this, applications that
+    use a different web framework (or none) can ignore it and wire the ReactiveHub themselves.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-reactive</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.helidon.webserver</groupId>
+      <artifactId>helidon-webserver-websocket</artifactId>
+    </dependency>
+  </dependencies>
+</project>

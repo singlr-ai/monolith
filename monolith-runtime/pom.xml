@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.standardapplied</groupId>
+    <artifactId>monolith-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>monolith-runtime</artifactId>
+  <name>Monolith Runtime</name>
+  <description>The runtime the generated code uses: libpq via Panama FFM (no JDBC), a bounded
+    connection pool, the binary tuple bridge + type codecs, field encryption (PgCrypto), and the
+    WAL change-feed primitives (Wal/WalStream). Pure JDK + FFM, no third-party dependencies.</description>
+
+  <dependencies>
+    <!-- the Json wrapper type (jsonb binding) is declared in the api -->
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-api</artifactId>
+    </dependency>
+  </dependencies>
+</project>

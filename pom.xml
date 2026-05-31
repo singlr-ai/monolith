@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.standardapplied</groupId>
+  <artifactId>monolith-parent</artifactId>
+  <version>0.1.0</version>
+  <packaging>pom</packaging>
+
+  <name>Monolith</name>
+  <description>Live, typed queries on real Postgres for Java. A schema, typed data access, a client
+    reader, and reactive live queries generated from one declaration, over libpq via Panama FFM.</description>
+  <url>https://github.com/singlr-ai/monolith</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+    </license>
+  </licenses>
+
+  <organization>
+    <name>Standard Applied Intelligence Labs</name>
+    <url>https://standardapplied.com</url>
+  </organization>
+
+  <modules>
+    <module>monolith-api</module>
+    <module>monolith-codegen</module>
+    <module>monolith-runtime</module>
+    <module>monolith-reactive</module>
+    <module>monolith-helidon</module>
+    <module>examples/collab</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <helidon.version>4.1.6</helidon.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Helidon SE (optional adapter only). Imported as a BOM so the adapter pins one version. -->
+      <dependency>
+        <groupId>io.helidon</groupId>
+        <artifactId>helidon-bom</artifactId>
+        <version>${helidon.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.standardapplied</groupId>
+        <artifactId>monolith-api</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.standardapplied</groupId>
+        <artifactId>monolith-codegen</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.standardapplied</groupId>
+        <artifactId>monolith-runtime</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.standardapplied</groupId>
+        <artifactId>monolith-reactive</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.standardapplied</groupId>
+        <artifactId>monolith-helidon</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>

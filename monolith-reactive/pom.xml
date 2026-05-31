@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.standardapplied</groupId>
+    <artifactId>monolith-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>monolith-reactive</artifactId>
+  <name>Monolith Reactive</name>
+  <description>Live queries over real relational schemas: subscribe to a @PgQuery by param, and the
+    WAL-tailing Invalidator wakes exactly the right subscribers when a relevant row changes (value-
+    precise, join-aware). Framework-agnostic, bring your own transport (see monolith-helidon).</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-runtime</artifactId>
+    </dependency>
+  </dependencies>
+</project>
