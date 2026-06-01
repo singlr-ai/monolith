@@ -317,6 +317,57 @@ class PgTypeProcessorTest {
     }
   }
 
+  @Nested
+  @DisplayName("compliance DDL (@Tenant / @Audited)")
+  class Compliance {
+
+    private String sqlFor(String record) throws IOException {
+      Outcome out = process(Map.of("t.Acct", "package t; " + IMPORTS + " " + record), true);
+      assertTrue(out.cleanRun(), () -> "processor errors: " + out.processorErrors());
+      return Files.readString(out.sql().resolve("acct.sql"));
+    }
+
+    @Test
+    void aTenantColumnGeneratesForcedRowLevelSecurity() throws IOException {
+      String sql = sqlFor("@PgType public record Acct(@Tenant String org, int n) {}");
+      assertTrue(sql.contains("ENABLE ROW LEVEL SECURITY"));
+      assertTrue(sql.contains("FORCE ROW LEVEL SECURITY"));
+      assertTrue(sql.contains("acct_tenant_isolation"));
+      assertTrue(sql.contains("current_setting('app.tenant', true)::text"));
+    }
+
+    @Test
+    void aUuidTenantColumnCastsToUuid() throws IOException {
+      String sql = sqlFor("@PgType public record Acct(@Tenant java.util.UUID org) {}");
+      assertTrue(sql.contains("current_setting('app.tenant', true)::uuid"));
+    }
+
+    @Test
+    void anAuditedTypeGeneratesAnAppendOnlyAuditTrail() throws IOException {
+      String sql = sqlFor("@Audited @PgType public record Acct(int n) {}");
+      assertTrue(sql.contains("CREATE TABLE acct_audit"));
+      assertTrue(sql.contains("acct_audit_write"));
+      assertTrue(sql.contains("acct_audit_guard"));
+      assertTrue(sql.contains("SECURITY DEFINER"));
+      assertTrue(sql.contains("append-only"));
+    }
+
+    @Test
+    void anOrdinaryTypeHasNeitherRlsNorAudit() throws IOException {
+      String sql = sqlFor("@PgType public record Acct(int n) {}");
+      assertFalse(sql.contains("ROW LEVEL SECURITY"));
+      assertFalse(sql.contains("_audit"));
+    }
+
+    @Test
+    void tenantOnANonTextOrUuidColumnIsRejected() {
+      Outcome out = process("t.Bad",
+          "package t; " + IMPORTS + " @PgType public record Bad(@Tenant int n) {}");
+      assertFalse(out.cleanRun());
+      assertTrue(out.anyError("@Tenant is only supported"));
+    }
+  }
+
   @Test
   @DisplayName("without output directories, no sql/ts/lock files are written")
   void artifactDirsAreOptional() {
@@ -505,7 +556,7 @@ class PgTypeProcessorTest {
       Class<?> fieldClass = Class.forName("monolith.pg.PgTypeProcessor$Field");
       var ctor = fieldClass.getDeclaredConstructors()[0];
       ctor.setAccessible(true);
-      return ctor.newInstance(0, "x", "text", fixed, 4, 0, javaType, false, false);
+      return ctor.newInstance(0, "x", "text", fixed, 4, 0, javaType, false, false, false);
     }
   }
 }

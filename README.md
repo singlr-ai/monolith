@@ -65,8 +65,11 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
 - **libpq, not JDBC.** Queries go through libpq, Postgres's own C client, called directly via the
   Java FFM API (JDK 22+), and results come back in the binary protocol. Because it *is* libpq, TLS and
   authentication (including SCRAM) are libpq's, not something reimplemented here.
-- **Transparent field encryption.** `@Encrypted String` is encrypted and decrypted in the JVM
-  (AES-256-GCM); the database sees only ciphertext and the key never leaves your process.
+- **Compliance building blocks, declared.** `@Encrypted String` is encrypted in the JVM
+  (AES-256-GCM), so the database only ever stores ciphertext and the key never leaves your process.
+  `@Tenant` generates forced row-level security that confines every row to the current tenant (and
+  blocks cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. The
+  app sets the tenant and actor per transaction with `PgSession`.
 - **A library, not a platform.** The core has no web framework. Bring your own `main` and routes; an
   optional Helidon WebSocket adapter is included for serving live queries.
 
@@ -83,7 +86,7 @@ resolves up to the `region` it rolls into.
 
 | Module | What it is |
 |---|---|
-| `monolith-api` | Declaration annotations: `@PgType`, `@PgQuery`, `@PgProjection`, `@PgNull`, `@Encrypted`, `Json`. |
+| `monolith-api` | Declaration annotations: `@PgType`, `@PgQuery`, `@PgProjection`, `@PgNull`, `@Encrypted`, `@Tenant`, `@Audited`, `Json`. |
 | `monolith-codegen` | The `javac` annotation processor. Generates DDL, readers/builders, TypeScript readers, and invalidation rules. |
 | `monolith-runtime` | libpq via Panama FFM, a connection pool, the binary tuple bridge and codecs, field encryption, and the WAL change-feed primitives. Pure JDK, no third-party dependencies. |
 | `monolith-reactive` | Live queries: `ReactiveHub` plus the WAL-tailing `Invalidator`. No web dependency. |
@@ -118,8 +121,6 @@ Honest about the gaps, since the design covers more than this repo ships:
 
 - The horizontal-scaling story (read replicas, multi-node fan-out behind one feed, tenant sharding,
   failover) is prototyped but **not in this repository**.
-- Compliance beyond `@Encrypted`: enforced row-level security and audit trails are application
-  patterns today, not library features here.
 
 ## Status & requirements
 

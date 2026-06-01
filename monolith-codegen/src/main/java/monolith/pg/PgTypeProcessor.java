@@ -73,7 +73,7 @@ public final class PgTypeProcessor extends AbstractProcessor {
   /** One record component, resolved to its wire kind, offset, and nullability. */
   private record Field(
       int ordinal, String name, String pgType, Kind kind, int width,
-      int headerOffset, String javaType, boolean nullable, boolean encrypted) {}
+      int headerOffset, String javaType, boolean nullable, boolean encrypted, boolean tenant) {}
 
   /** Accumulated across rounds; the aggregate schema.lock is written at the end. */
   private final List<String> lockEntries = new ArrayList<>();
@@ -160,11 +160,16 @@ public final class PgTypeProcessor extends AbstractProcessor {
         throw new IllegalArgumentException(
             "@Encrypted is only supported on String components ('" + comp + "' is " + type + ")");
       }
+      boolean tenant = c.getAnnotation(Tenant.class) != null;
+      if (tenant && !(type.equals("java.lang.String") || type.equals("java.util.UUID"))) {
+        throw new IllegalArgumentException(
+            "@Tenant is only supported on String or UUID components ('" + comp + "' is " + type + ")");
+      }
       // an encrypted field is a variable-length bytea on the wire; the Java type stays String.
       String pgType = encrypted ? "bytea" : m.pgType;
       int headerWidth = m.kind == Kind.FIXED ? m.width : 8; // var: int4 off + int4 len
       fields.add(new Field(
-          ordinal, comp, pgType, m.kind, m.width, offset, type, isNullable(c, name), encrypted));
+          ordinal, comp, pgType, m.kind, m.width, offset, type, isNullable(c, name), encrypted, tenant));
       offset += headerWidth;
       ordinal++;
     }
@@ -174,7 +179,7 @@ public final class PgTypeProcessor extends AbstractProcessor {
     if (!projection) {
       // A projection is read-only: no table to create, nothing to write.
       emitBuilder(pkg, name, fields, fixedSize, bitmapBytes);
-      emitSql(pgName, fields);
+      emitSql(pgName, fields, record.getAnnotation(Audited.class) != null);
     }
     if (querySql != null) {
       emitQuery(pkg, name, querySql);
@@ -775,7 +780,7 @@ public final class PgTypeProcessor extends AbstractProcessor {
 
   // ======================= SQL ===========================================
 
-  private void emitSql(String pgName, List<Field> fields) throws IOException {
+  private void emitSql(String pgName, List<Field> fields, boolean audited) throws IOException {
     String dir = processingEnv.getOptions().get("monolith.sqlDir");
     if (dir == null) return;
     StringBuilder b = new StringBuilder();
@@ -792,9 +797,58 @@ public final class PgTypeProcessor extends AbstractProcessor {
     b.append("CREATE TABLE ").append(pgName).append(" (\n");
     appendColumns(b, fields, true);
     b.append(");\n");
+    for (Field f : fields) {
+      if (f.tenant()) {
+        appendTenantRls(b, pgName, f);
+        break; // one tenant column
+      }
+    }
+    if (audited) {
+      appendAudit(b, pgName);
+    }
     Path out = Path.of(dir, pgName + ".sql");
     Files.createDirectories(out.getParent());
     Files.writeString(out, b.toString(), StandardCharsets.UTF_8);
+  }
+
+  /** Forced row-level security confining every row to {@code current_setting('app.tenant')}. */
+  private static void appendTenantRls(StringBuilder b, String table, Field tenant) {
+    String col = snake(tenant.name());
+    String match = col + " = current_setting('app.tenant', true)::" + tenant.pgType();
+    b.append("\n-- Tenant isolation: forced row-level security on ").append(col).append(".\n");
+    b.append("ALTER TABLE ").append(table).append(" ENABLE ROW LEVEL SECURITY;\n");
+    b.append("ALTER TABLE ").append(table).append(" FORCE ROW LEVEL SECURITY;\n");
+    b.append("CREATE POLICY ").append(table).append("_tenant_isolation ON ").append(table)
+        .append("\n  USING (").append(match).append(")\n  WITH CHECK (").append(match).append(");\n");
+  }
+
+  /** Append-only audit table + a write-capturing trigger + an immutability guard. */
+  private static void appendAudit(StringBuilder b, String table) {
+    b.append("\n-- Immutable audit trail for ").append(table).append(".\n");
+    b.append("CREATE TABLE ").append(table).append("_audit (\n")
+        .append("  audit_id  bigserial PRIMARY KEY,\n")
+        .append("  logged_at timestamptz NOT NULL DEFAULT now(),\n")
+        .append("  actor     text NOT NULL,\n")
+        .append("  action    text NOT NULL,\n")
+        .append("  old_row   jsonb,\n")
+        .append("  new_row   jsonb\n);\n");
+    // SECURITY DEFINER: the trigger writes the audit row as the (privileged) owner, so the
+    // application role needs no direct access to the audit table and cannot forge entries.
+    b.append("CREATE FUNCTION ").append(table).append("_audit_record() RETURNS trigger\n")
+        .append("  LANGUAGE plpgsql SECURITY DEFINER AS $$\nBEGIN\n")
+        .append("  INSERT INTO ").append(table).append("_audit (actor, action, old_row, new_row)\n")
+        .append("  VALUES (coalesce(current_setting('app.actor', true), 'unknown'), TG_OP,\n")
+        .append("          to_jsonb(OLD), to_jsonb(NEW));\n  RETURN NULL;\nEND $$;\n");
+    b.append("CREATE TRIGGER ").append(table).append("_audit_write\n")
+        .append("  AFTER INSERT OR UPDATE OR DELETE ON ").append(table)
+        .append("\n  FOR EACH ROW EXECUTE FUNCTION ").append(table).append("_audit_record();\n");
+    b.append("CREATE FUNCTION ").append(table).append("_audit_immutable() RETURNS trigger\n")
+        .append("  LANGUAGE plpgsql AS $$\nBEGIN\n")
+        .append("  RAISE EXCEPTION 'audit table ").append(table).append("_audit is append-only';\n")
+        .append("END $$;\n");
+    b.append("CREATE TRIGGER ").append(table).append("_audit_guard\n")
+        .append("  BEFORE UPDATE OR DELETE ON ").append(table).append("_audit")
+        .append("\n  FOR EACH ROW EXECUTE FUNCTION ").append(table).append("_audit_immutable();\n");
   }
 
   private static void appendColumns(StringBuilder b, List<Field> fields, boolean constraints) {
