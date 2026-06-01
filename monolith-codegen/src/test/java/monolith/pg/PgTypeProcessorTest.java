@@ -189,6 +189,24 @@ class PgTypeProcessorTest {
       assertTrue(out.cleanRun(), () -> "processor errors: " + out.processorErrors());
       assertTrue(Files.exists(out.sql().resolve("custom.sql")));
     }
+
+    @Test
+    void theTypeScriptReaderDecodesJsonbNumericAndArrays() throws IOException {
+      String code = "package t; " + IMPORTS + " @PgType public record Wide("
+          + "Json meta, BigDecimal amount, int[] tags, long[] ids, String[] labels) {}";
+      Outcome out = process(Map.of("t.Wide", code), true);
+      assertTrue(out.cleanRun(), () -> "processor errors: " + out.processorErrors());
+
+      String ts = Files.readString(out.ts().resolve("wide.ts"));
+      assertTrue(ts.contains("import { decodeInt4Array, decodeInt8Array, decodeJsonb, "
+          + "decodeNumeric, decodeTextArray } from '@standardapplied/monolith-client';"));
+      assertTrue(ts.contains("decodeJsonb(this.buf"));
+      assertTrue(ts.contains("): unknown {"));            // jsonb
+      assertTrue(ts.contains("): string {"));             // numeric, as a decimal string
+      assertTrue(ts.contains("): number[] {"));           // int4[]
+      assertTrue(ts.contains("): bigint[] {"));           // int8[]
+      assertTrue(ts.contains("): (string | null)[] {"));  // text[]
+    }
   }
 
   @Nested

@@ -874,6 +874,7 @@ public final class PgTypeProcessor extends AbstractProcessor {
         .append("(big-endian).\n");
     b.append("// Temporal accessors return the raw Postgres epoch integer (date: int4 days\n");
     b.append("// since 2000-01-01; time/timestamp[tz]: bigint µs); ISO formatting is deferred.\n\n");
+    b.append(tsImports(fields));
     b.append("const FIXED_SIZE = ").append(fixedSize).append(";\n");
     b.append("const NULL_BITMAP_BYTES = ").append(bitmap).append(";\n");
     b.append("const td = new TextDecoder();\n\n");
@@ -907,20 +908,16 @@ public final class PgTypeProcessor extends AbstractProcessor {
   private static String tsAccessor(Field f, boolean hasBitmap) {
     int o = f.headerOffset();
     String expr = f.encrypted()
-        ? ("const off = this.v.getInt32(%d, false);\n"
-            + "    const len = this.v.getInt32(%d, false);\n"
-            + "    return this.buf.subarray(off, off + len);").formatted(o, o + 4) // ciphertext to client
+        ? tsSlice(o, "this.buf.subarray(off, off + len)") // ciphertext stays bytes for the client
         : switch (f.javaType()) {
       case "java.util.UUID" -> "return uuidAt(this.v, %d);".formatted(o);
-      case "java.lang.String" -> ("const off = this.v.getInt32(%d, false);\n"
-          + "    const len = this.v.getInt32(%d, false);\n"
-          + "    return td.decode(this.buf.subarray(off, off + len));").formatted(o, o + 4);
-      // numeric/jsonb/arrays: TS returns the raw Postgres binary slice for now
-      // (full decoding deferred, the Java↔Postgres path is the proven one).
-      case "byte[]", "java.math.BigDecimal", "monolith.pg.Json", "int[]", "long[]",
-          "java.lang.String[]" -> ("const off = this.v.getInt32(%d, false);\n"
-          + "    const len = this.v.getInt32(%d, false);\n"
-          + "    return this.buf.subarray(off, off + len);").formatted(o, o + 4);
+      case "java.lang.String" -> tsSlice(o, "td.decode(this.buf.subarray(off, off + len))");
+      case "byte[]" -> tsSlice(o, "this.buf.subarray(off, off + len)"); // genuine bytes
+      case "monolith.pg.Json" -> tsSlice(o, "decodeJsonb(this.buf.subarray(off, off + len))");
+      case "java.math.BigDecimal" -> tsSlice(o, "decodeNumeric(this.buf.subarray(off, off + len))");
+      case "int[]" -> tsSlice(o, "decodeInt4Array(this.buf.subarray(off, off + len))");
+      case "long[]" -> tsSlice(o, "decodeInt8Array(this.buf.subarray(off, off + len))");
+      case "java.lang.String[]" -> tsSlice(o, "decodeTextArray(this.buf.subarray(off, off + len))");
       case "int", "java.lang.Integer" -> "return this.v.getInt32(%d, false);".formatted(o);
       case "long", "java.lang.Long" -> "return this.v.getBigInt64(%d, false);".formatted(o);
       case "short", "java.lang.Short" -> "return this.v.getInt16(%d, false);".formatted(o);
@@ -940,16 +937,45 @@ public final class PgTypeProcessor extends AbstractProcessor {
     return "  %s(): %s {\n    %s\n  }\n\n".formatted(f.name(), tsType, expr);
   }
 
+  /** A TS accessor body that reads the variable-length header, then returns {@code expr}. */
+  private static String tsSlice(int o, String expr) {
+    return ("const off = this.v.getInt32(%d, false);\n"
+        + "    const len = this.v.getInt32(%d, false);\n"
+        + "    return %s;").formatted(o, o + 4, expr);
+  }
+
   private static String tsType(String javaType) {
     return switch (javaType) {
       case "java.util.UUID", "java.lang.String" -> "string";
-      case "byte[]", "java.math.BigDecimal", "monolith.pg.Json", "int[]", "long[]",
-          "java.lang.String[]" -> "Uint8Array";
+      case "byte[]" -> "Uint8Array";
+      case "monolith.pg.Json" -> "unknown";
+      case "java.math.BigDecimal" -> "string";
+      case "int[]" -> "number[]";
+      case "long[]" -> "bigint[]";
+      case "java.lang.String[]" -> "(string | null)[]";
       case "long", "java.lang.Long", "java.time.LocalTime", "java.time.LocalDateTime",
           "java.time.Instant", "java.time.OffsetDateTime" -> "bigint";
       case "boolean", "java.lang.Boolean" -> "boolean";
       default -> "number"; // int, short, double, float, date(int4)
     };
+  }
+
+  /** Import line for the client-package decoders the generated reader uses (empty if none). */
+  private static String tsImports(List<Field> fields) {
+    Set<String> fns = new TreeSet<>();
+    for (Field f : fields) {
+      if (f.encrypted()) continue; // ciphertext stays Uint8Array
+      switch (f.javaType()) {
+        case "monolith.pg.Json" -> fns.add("decodeJsonb");
+        case "java.math.BigDecimal" -> fns.add("decodeNumeric");
+        case "int[]" -> fns.add("decodeInt4Array");
+        case "long[]" -> fns.add("decodeInt8Array");
+        case "java.lang.String[]" -> fns.add("decodeTextArray");
+        default -> { }
+      }
+    }
+    if (fns.isEmpty()) return "";
+    return "import { " + String.join(", ", fns) + " } from '@standardapplied/monolith-client';\n\n";
   }
 
   // ======================= schema.lock ===================================

@@ -6,3 +6,10 @@
 export { parseFrame } from './frame.ts';
 export { MonolithLive } from './live.ts';
 export type { LiveOptions, RowReader, Subscription } from './live.ts';
+export {
+  decodeInt4Array,
+  decodeInt8Array,
+  decodeJsonb,
+  decodeNumeric,
+  decodeTextArray,
+} from './codec.ts';

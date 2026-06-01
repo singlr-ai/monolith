@@ -123,8 +123,6 @@ managed service.
 
 Honest about the gaps:
 
-- The TypeScript reader decodes scalar columns; `numeric`, `jsonb`, and array columns currently
-  surface as raw bytes (full client-side decoding deferred).
 - Some scaling concerns are deployment topology, not library code: the reactive fan-out gateway for
   very large fleets, and automatic failover, are documented in [`docs/SCALING.md`](docs/SCALING.md)
   rather than shipped as code.
