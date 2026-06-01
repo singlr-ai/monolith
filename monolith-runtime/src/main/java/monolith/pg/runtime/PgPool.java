@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * purpose, a multi-statement {@code PQexec} runs as one implicit transaction block and
  * {@code DISCARD ALL} refuses to run inside one.
  */
-public final class PgPool implements AutoCloseable {
+public final class PgPool implements ConnectionSource {
 
   private static final Duration DEFAULT_LEASE_TIMEOUT = Duration.ofSeconds(10);
 

@@ -70,6 +70,10 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   `@Tenant` generates forced row-level security that confines every row to the current tenant (and
   blocks cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. The
   app sets the tenant and actor per transaction with `PgSession`.
+- **Scale-out routing.** `PgReplicaSet` routes writes to the primary and reads round-robin across
+  streaming replicas; `ShardRouter` routes each tenant to its own shard for shared-nothing scale.
+  Both route over a common `ConnectionSource` (which `PgPool` implements). See
+  [`docs/SCALING.md`](docs/SCALING.md) for the full picture, including read-your-writes and failover.
 - **A library, not a platform.** The core has no web framework. Bring your own `main` and routes; an
   optional Helidon WebSocket adapter is included for serving live queries.
 
@@ -117,10 +121,13 @@ managed service.
 
 ## Not here yet
 
-Honest about the gaps, since the design covers more than this repo ships:
+Honest about the gaps:
 
-- The horizontal-scaling story (read replicas, multi-node fan-out behind one feed, tenant sharding,
-  failover) is prototyped but **not in this repository**.
+- The TypeScript reader decodes scalar columns; `numeric`, `jsonb`, and array columns currently
+  surface as raw bytes (full client-side decoding deferred).
+- Some scaling concerns are deployment topology, not library code: the reactive fan-out gateway for
+  very large fleets, and automatic failover, are documented in [`docs/SCALING.md`](docs/SCALING.md)
+  rather than shipped as code.
 
 ## Status & requirements
 
