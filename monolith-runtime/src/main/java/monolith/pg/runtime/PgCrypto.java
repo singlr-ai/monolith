@@ -7,6 +7,7 @@ package monolith.pg.runtime;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
@@ -29,8 +30,14 @@ public final class PgCrypto {
   private static volatile SecretKeySpec key;
 
   static {
-    String b64 = System.getenv("MONOLITH_FIELD_KEY");
-    if (b64 != null && !b64.isBlank()) setKey(Base64.getDecoder().decode(b64.trim()));
+    loadKeyFromEnv(System.getenv("MONOLITH_FIELD_KEY"));
+  }
+
+  /** Installs the key from a base64 string, ignoring a null/blank value. Package-private for tests. */
+  static void loadKeyFromEnv(String base64) {
+    if (base64 != null && !base64.isBlank()) {
+      setKey(Base64.getDecoder().decode(base64.trim()));
+    }
   }
 
   /** Install the 32-byte AES-256 key (typically fetched from a KMS at startup). */
@@ -40,28 +47,26 @@ public final class PgCrypto {
   }
 
   public static byte[] encrypt(String plaintext) {
-    SecretKeySpec k = require();
-    try {
-      byte[] nonce = new byte[NONCE_LEN];
-      new SecureRandom().nextBytes(nonce);
-      Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-      c.init(Cipher.ENCRYPT_MODE, k, new GCMParameterSpec(TAG_BITS, nonce));
-      byte[] ct = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
-      return ByteBuffer.allocate(NONCE_LEN + ct.length).put(nonce).put(ct).array();
-    } catch (Exception e) {
-      throw new RuntimeException(e);
-    }
+    byte[] nonce = new byte[NONCE_LEN];
+    new SecureRandom().nextBytes(nonce);
+    byte[] ct = cipher(Cipher.ENCRYPT_MODE, nonce, plaintext.getBytes(StandardCharsets.UTF_8));
+    return ByteBuffer.allocate(NONCE_LEN + ct.length).put(nonce).put(ct).array();
   }
 
   public static String decrypt(byte[] blob) {
+    byte[] nonce = Arrays.copyOfRange(blob, 0, NONCE_LEN);
+    byte[] ct = Arrays.copyOfRange(blob, NONCE_LEN, blob.length);
+    return new String(cipher(Cipher.DECRYPT_MODE, nonce, ct), StandardCharsets.UTF_8);
+  }
+
+  /** The single place the JCE ceremony lives; its catch is exercised by a bad-tag decrypt. */
+  private static byte[] cipher(int mode, byte[] nonce, byte[] input) {
     SecretKeySpec k = require();
     try {
-      byte[] nonce = Arrays.copyOfRange(blob, 0, NONCE_LEN);
-      byte[] ct = Arrays.copyOfRange(blob, NONCE_LEN, blob.length);
       Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-      c.init(Cipher.DECRYPT_MODE, k, new GCMParameterSpec(TAG_BITS, nonce));
-      return new String(c.doFinal(ct), StandardCharsets.UTF_8);
-    } catch (Exception e) {
+      c.init(mode, k, new GCMParameterSpec(TAG_BITS, nonce));
+      return c.doFinal(input);
+    } catch (GeneralSecurityException e) {
       throw new RuntimeException(e);
     }
   }

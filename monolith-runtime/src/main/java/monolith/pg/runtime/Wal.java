@@ -44,7 +44,6 @@ public final class Wal {
           "SELECT data FROM pg_logical_slot_get_changes('" + slot + "', NULL, NULL)").getOrThrow();
       List<WalChange> changes = new ArrayList<>();
       for (String line : lines) {
-        if (line == null) continue;
         Matcher m = TABLE.matcher(line);
         if (m.find()) changes.add(new WalChange(m.group(1), line)); // skips BEGIN/COMMIT
       }

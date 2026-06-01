@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Real Postgres with logical decoding enabled (a service container can't set wal_level,
+      # so run it directly). trust auth keeps replication connections password-free.
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=monolith_test \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 5432:5432 postgres:18 -c wal_level=logical
+          for _ in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres && exit 0
+            sleep 1
+          done
+          echo "Postgres did not become ready" >&2; exit 1
+
+      # libpq is the client library the FFM runtime binds at run time.
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y libpq5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build, test, and enforce the coverage gate
+        env:
+          MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres
+        run: mvn -B --no-transfer-progress clean verify

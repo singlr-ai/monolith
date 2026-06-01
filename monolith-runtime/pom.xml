@@ -22,4 +22,30 @@
       <artifactId>monolith-api</artifactId>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Run the codegen processor over the integration-test @PgQuery records so the tests
+           exercise the runtime through generated readers/queries (main sources have none). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>com.standardapplied</groupId>
+              <artifactId>monolith-codegen</artifactId>
+              <version>${project.version}</version>
+            </path>
+            <path>
+              <groupId>com.standardapplied</groupId>
+              <artifactId>monolith-api</artifactId>
+              <version>${project.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>
+

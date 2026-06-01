@@ -11,8 +11,15 @@ mvn install
 ```
 
 The reactive and integration tests need a local **PostgreSQL 14+** with `wal_level = logical`
-(set `ALTER SYSTEM SET wal_level = 'logical';` then restart). Tests start/connect to a local
-instance; there is no H2 or Testcontainers. Monolith tests against real Postgres on purpose.
+(set `ALTER SYSTEM SET wal_level = 'logical';` then restart) reachable as `dbname=monolith_test`,
+or via `MONOLITH_TEST_CONNINFO`. There is no H2 or Testcontainers; Monolith tests against real
+Postgres on purpose. The integration tests self-skip when no database is reachable, so `mvn install`
+works offline.
+
+`mvn verify` additionally enforces a **100% line and branch coverage gate** (JaCoCo). The only
+exclusions are the live streaming-replication boundary — `Pg`, `WalStream`, and `Invalidator` —
+whose branches depend on native calls, server-timed protocol messages, and a background thread;
+those are integration-tested but not gated. The gate run needs the database.
 
 ## Conventions
 

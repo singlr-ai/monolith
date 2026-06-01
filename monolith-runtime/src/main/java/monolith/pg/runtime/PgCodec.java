@@ -82,12 +82,13 @@ public final class PgCodec {
     for (int i = 0; i < allDigits.length(); i += 4) {
       digits.add((short) Integer.parseInt(allDigits.substring(i, i + 4)));
     }
-    // trim leading zero words (decrementing weight) and trailing zero words
-    while (!digits.isEmpty() && digits.get(0) == 0) {
+    // Trim leading zero words (decrementing weight) and trailing zero words. The value is nonzero
+    // here, so at least one word is nonzero and each loop always stops on it (the list never empties).
+    while (digits.get(0) == 0) {
       digits.remove(0);
       weight--;
     }
-    while (!digits.isEmpty() && digits.get(digits.size() - 1) == 0) {
+    while (digits.get(digits.size() - 1) == 0) {
       digits.remove(digits.size() - 1);
     }
 

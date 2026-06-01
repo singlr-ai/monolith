@@ -5,9 +5,7 @@
 
 package monolith.pg.helidon;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.List;
 
 /**
@@ -25,18 +23,12 @@ import java.util.List;
 public final class WsResults {
 
   public static byte[] frame(List<byte[]> rows) {
-    try {
-      ByteArrayOutputStream bos = new ByteArrayOutputStream();
-      DataOutputStream out = new DataOutputStream(bos);
-      out.writeInt(rows.size());
-      for (byte[] row : rows) {
-        out.writeInt(row.length);
-        out.write(row);
-      }
-      return bos.toByteArray();
-    } catch (IOException e) {
-      throw new RuntimeException(e); // ByteArrayOutputStream never throws
-    }
+    int size = Integer.BYTES;
+    for (byte[] row : rows) size += Integer.BYTES + row.length;
+    ByteBuffer buf = ByteBuffer.allocate(size); // big-endian by default
+    buf.putInt(rows.size());
+    for (byte[] row : rows) buf.putInt(row.length).put(row);
+    return buf.array();
   }
 
   private WsResults() {}

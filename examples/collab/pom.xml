@@ -20,6 +20,8 @@
 
   <properties>
     <maven.deploy.skip>true</maven.deploy.skip>
+    <!-- An example app (has a main, no tests); not part of the coverage gate. -->
+    <jacoco.skip>true</jacoco.skip>
   </properties>
 
   <dependencies>

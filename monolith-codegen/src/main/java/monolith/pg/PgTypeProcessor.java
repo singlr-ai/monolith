@@ -316,7 +316,9 @@ public final class PgTypeProcessor extends AbstractProcessor {
         continue;
       }
       List<String> path = bfs(q.edges(), alias, q.paramAlias());
-      if (path == null || path.size() < 2) continue; // disconnected, can't resolve
+      // A connected non-param table always yields a path of length >= 2 (its alias differs from the
+      // param alias); a disconnected one yields null. So null is the only "can't resolve" case.
+      if (path == null) continue;
       QEdge first = edgeBetween(q.edges(), path.get(0), path.get(1));
       String keyCol = colOn(first, path.get(0));
       String entryCol = colOn(first, path.get(1));
@@ -492,10 +494,6 @@ public final class PgTypeProcessor extends AbstractProcessor {
       case "int", "long", "short", "boolean", "double", "float", "byte", "char" -> true;
       default -> false;
     };
-  }
-
-  private static boolean isVarType(String t) {
-    return t.equals("java.lang.String") || t.equals("byte[]");
   }
 
   // ======================= Java reader ===================================
