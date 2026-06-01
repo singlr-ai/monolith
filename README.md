@@ -56,8 +56,9 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   no runtime reflection.
 - **Schema migrations.** `Migrator` applies ordered, versioned migrations once each, in their own
   transactions, recorded in a tracking table, and guarded by CRC32 checksums (idempotent, refuses
-  edited or out-of-order migrations). Pairs with the codegen's `schema.lock` drift detection. See
-  [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
+  edited or out-of-order migrations). It is forward-only by design, with `status` to preview the plan,
+  repeatable migrations for views and functions, and `baseline` to adopt an existing database. Pairs
+  with the codegen's `schema.lock` drift detection. See [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 - **Live queries over joined tables.** Subscribe to a query and a parameter. When a row that affects
   the result changes, the generated rule maps the change back to the affected parameter values
   (walking joins where needed) and the query is re-run for just those subscribers. This is precise

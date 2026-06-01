@@ -16,6 +16,7 @@ import java.lang.foreign.MemorySegment;
 import java.util.List;
 import monolith.pg.runtime.Migrator;
 import monolith.pg.runtime.Migrator.Migration;
+import monolith.pg.runtime.Migrator.RepeatableMigration;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.Result;
 import org.junit.jupiter.api.AfterAll;
@@ -58,7 +59,9 @@ class MigratorIT {
   void clean() {
     assumeTrue(available, "no Postgres reachable at " + CONNINFO);
     exec("SET default_transaction_read_only = off");
-    exec("DROP TABLE IF EXISTS monolith_migrations, mt_a, mt_b, mt_one, mt_ok, mt_never");
+    exec("DROP VIEW IF EXISTS mt_view");
+    exec("DROP TABLE IF EXISTS monolith_migrations, monolith_repeatable,"
+        + " mt_a, mt_b, mt_one, mt_ok, mt_never, mt_three, mt_six");
   }
 
   @Test
@@ -68,7 +71,7 @@ class MigratorIT {
         new Migration(2, "create_b", "CREATE TABLE mt_b (id int)"),  // given out of order
         new Migration(1, "create_a", "CREATE TABLE mt_a (id int)")));
 
-    assertEquals(List.of(1, 2), applied.getOrThrow());
+    assertEquals(List.of(1, 2), applied.getOrThrow().appliedVersions());
     assertTrue(tableExists("mt_a"));
     assertTrue(tableExists("mt_b"));
     assertEquals(2, count("SELECT count(*) FROM monolith_migrations"));
@@ -78,8 +81,8 @@ class MigratorIT {
   @DisplayName("re-running applies nothing new")
   void isIdempotent() {
     var migrations = List.of(new Migration(1, "create_a", "CREATE TABLE mt_a (id int)"));
-    assertEquals(List.of(1), Migrator.migrate(conn, migrations).getOrThrow());
-    assertEquals(List.of(), Migrator.migrate(conn, migrations).getOrThrow());
+    assertEquals(List.of(1), Migrator.migrate(conn, migrations).getOrThrow().appliedVersions());
+    assertEquals(List.of(), Migrator.migrate(conn, migrations).getOrThrow().appliedVersions());
   }
 
   @Test
@@ -139,6 +142,113 @@ class MigratorIT {
     exec("SET default_transaction_read_only = on"); // makes the CREATE TABLE fail
     try {
       var result = Migrator.migrate(conn, List.of(new Migration(1, "x", "CREATE TABLE mt_a (id int)")));
+      assertTrue(assertInstanceOf(Result.Failure.class, result).error().contains("monolith_migrations"));
+    } finally {
+      exec("SET default_transaction_read_only = off");
+    }
+  }
+
+  @Test
+  @DisplayName("status reports applied, pending, and is clean before running")
+  void statusReportsPendingWithoutApplying() {
+    Migrator.migrate(conn, List.of(new Migration(1, "a", "CREATE TABLE mt_a (id int)"))).getOrThrow();
+
+    var status = Migrator.status(conn, List.of(
+        new Migration(1, "a", "CREATE TABLE mt_a (id int)"),
+        new Migration(2, "b", "CREATE TABLE mt_b (id int)"))).getOrThrow();
+
+    assertEquals(List.of(1), status.applied());
+    assertEquals(List.of(2), status.pending().stream().map(Migration::version).toList());
+    assertTrue(status.isClean());
+    assertFalse(tableExists("mt_b"), "status applies nothing");
+  }
+
+  @Test
+  @DisplayName("status surfaces a problem and is not clean")
+  void statusFlagsProblems() {
+    Migrator.migrate(conn, List.of(new Migration(1, "a", "CREATE TABLE mt_a (id int)"))).getOrThrow();
+
+    var status = Migrator.status(conn, List.of(
+        new Migration(1, "a", "CREATE TABLE mt_a (id int, c int)"))).getOrThrow(); // edited
+
+    assertFalse(status.isClean());
+    assertTrue(status.problems().get(0).contains("modified"));
+  }
+
+  @Test
+  @DisplayName("status fails clearly when the tracking table cannot be created")
+  void statusFailsWhenTrackingUnavailable() {
+    exec("SET default_transaction_read_only = on");
+    try {
+      var result = Migrator.status(conn, List.of(new Migration(1, "a", "CREATE TABLE mt_a (id int)")));
+      assertTrue(assertInstanceOf(Result.Failure.class, result).error().contains("monolith_migrations"));
+    } finally {
+      exec("SET default_transaction_read_only = off");
+    }
+  }
+
+  @Test
+  @DisplayName("a repeatable runs once, is skipped while unchanged, and re-runs when its SQL changes")
+  void repeatableReappliesOnChange() {
+    var first = Migrator.migrate(conn, List.of(),
+        List.of(new RepeatableMigration("the_view", "CREATE OR REPLACE VIEW mt_view AS SELECT 1 AS x")))
+        .getOrThrow();
+    assertEquals(List.of("the_view"), first.appliedRepeatables());
+    assertEquals("1", text("SELECT x FROM mt_view"));
+
+    var unchanged = Migrator.migrate(conn, List.of(),
+        List.of(new RepeatableMigration("the_view", "CREATE OR REPLACE VIEW mt_view AS SELECT 1 AS x")))
+        .getOrThrow();
+    assertEquals(List.of(), unchanged.appliedRepeatables(), "unchanged repeatable is skipped");
+
+    var changed = Migrator.migrate(conn, List.of(),
+        List.of(new RepeatableMigration("the_view", "CREATE OR REPLACE VIEW mt_view AS SELECT 2 AS x")))
+        .getOrThrow();
+    assertEquals(List.of("the_view"), changed.appliedRepeatables());
+    assertEquals("2", text("SELECT x FROM mt_view"), "the changed repeatable re-ran");
+  }
+
+  @Test
+  @DisplayName("a failing repeatable rolls back with a clear error")
+  void repeatableFailureRollsBack() {
+    var result = Migrator.migrate(conn, List.of(),
+        List.of(new RepeatableMigration("bad", "CREATE OR REPLACE VIEW this is not valid sql")));
+
+    assertTrue(assertInstanceOf(Result.Failure.class, result).error().contains("repeatable bad failed"));
+    assertEquals(0, count("SELECT count(*) FROM monolith_repeatable"), "nothing recorded");
+  }
+
+  @Test
+  @DisplayName("baseline skips versions at or below it and applies the ones above")
+  void baselineSkipsBelowAndAppliesAbove() {
+    Migrator.baseline(conn, 5, "legacy_schema").getOrThrow();
+
+    var applied = Migrator.migrate(conn, List.of(
+        new Migration(3, "below", "CREATE TABLE mt_three (id int)"),   // <= baseline: skipped
+        new Migration(6, "above", "CREATE TABLE mt_six (id int)")))    // > baseline: applied
+        .getOrThrow();
+
+    assertEquals(List.of(6), applied.appliedVersions());
+    assertFalse(tableExists("mt_three"), "a version at or below the baseline is not applied");
+    assertTrue(tableExists("mt_six"), "a version above the baseline is applied");
+  }
+
+  @Test
+  @DisplayName("baseline is recorded once and rejects a second baseline at the same version")
+  void baselineRejectsDuplicate() {
+    Migrator.baseline(conn, 5, "legacy_schema").getOrThrow();
+
+    var again = Migrator.baseline(conn, 5, "again");
+
+    assertTrue(assertInstanceOf(Result.Failure.class, again).error().contains("baseline at version 5"));
+  }
+
+  @Test
+  @DisplayName("baseline fails clearly when the tracking table cannot be created")
+  void baselineFailsWhenTrackingUnavailable() {
+    exec("SET default_transaction_read_only = on");
+    try {
+      var result = Migrator.baseline(conn, 1, "x");
       assertTrue(assertInstanceOf(Result.Failure.class, result).error().contains("monolith_migrations"));
     } finally {
       exec("SET default_transaction_read_only = off");
