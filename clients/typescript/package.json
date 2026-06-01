@@ -12,7 +12,7 @@
   },
   "files": ["dist", "src"],
   "scripts": {
-    "test": "node --test --experimental-test-coverage \"src/*.test.ts\"",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 \"src/*.test.ts\"",
     "build": "tsc"
   },
   "devDependencies": {

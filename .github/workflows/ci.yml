@@ -47,6 +47,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Test the TypeScript client
+      - name: Test the TypeScript client (100% coverage gate)
         working-directory: clients/typescript
-        run: node --test --experimental-test-coverage "src/*.test.ts"
+        run: node --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 "src/*.test.ts"
