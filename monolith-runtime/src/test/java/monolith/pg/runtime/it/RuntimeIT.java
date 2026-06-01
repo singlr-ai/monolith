@@ -15,6 +15,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -206,24 +207,22 @@ class RuntimeIT {
   @DisplayName("generated invalidation rules map changes back to params, joins included")
   void invalidationRulesResolveParams() {
     UUID box = insertBox("EU");
-    UUID widget = insertWidget(box, "w", 1, null);
+    insertWidget(box, "w", 1, null);
 
     try (PgPool pool = new PgPool(CONNINFO, 2)) {
       var byRegion = new WidgetsByRegionInvalidation();
       var byBox = new WidgetsByBoxInvalidation();
 
-      var boxChange = new WalChange("boxes", "table public.boxes: UPDATE: region[text]:'EU'");
+      var boxChange = new WalChange("boxes", Map.of("region", Set.of("EU")));
       assertEquals(Set.of("EU"), byRegion.affectedParams("boxes", boxChange::valuesOf, pool));
 
-      var widgetChange = new WalChange("widgets",
-          "table public.widgets: INSERT: id[uuid]:'" + widget + "' box_id[uuid]:'" + box
-              + "' name[text]:'w' qty[integer]:1");
+      var widgetChange = new WalChange("widgets", Map.of("box_id", Set.of(box.toString())));
       // joined param: box_id walks up to the box's region
       assertEquals(Set.of("EU"), byRegion.affectedParams("widgets", widgetChange::valuesOf, pool));
       // direct param: box_id read straight off the change
       assertEquals(Set.of(box.toString()), byBox.affectedParams("widgets", widgetChange::valuesOf, pool));
 
-      var noBoxId = new WalChange("widgets", "table public.widgets: INSERT: name[text]:'w'");
+      var noBoxId = new WalChange("widgets", Map.<String, Set<String>>of());
       assertTrue(byRegion.affectedParams("widgets", noBoxId::valuesOf, pool).isEmpty());
 
       assertTrue(byRegion.affectedParams("unrelated", widgetChange::valuesOf, pool).isEmpty());

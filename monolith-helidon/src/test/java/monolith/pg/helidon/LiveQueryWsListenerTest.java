@@ -122,7 +122,7 @@ class LiveQueryWsListenerTest {
     var s = new FakeSession();
     f.listener().onMessage(s, "Q:p1", true); // 1 push (current)
 
-    f.hub().apply(new WalChange("t", "table public.t: INSERT:")); // wakes the subscriber
+    f.hub().apply(new WalChange("t", java.util.Map.of())); // wakes the subscriber
 
     assertEquals(2, s.sends); // pushed again on the change
   }
@@ -134,7 +134,7 @@ class LiveQueryWsListenerTest {
     f.listener().onMessage(s, "Q:p1", true);
 
     f.listener().onClose(s, 1000, "bye");
-    f.hub().apply(new WalChange("t", "table public.t: INSERT:"));
+    f.hub().apply(new WalChange("t", java.util.Map.of()));
 
     assertEquals(1, s.sends); // only the initial push, none after close
   }
@@ -152,7 +152,7 @@ class LiveQueryWsListenerTest {
     f.listener().onMessage(s, "Q:p1", true);
 
     f.listener().onError(s, new RuntimeException("boom"));
-    f.hub().apply(new WalChange("t", "table public.t: INSERT:"));
+    f.hub().apply(new WalChange("t", java.util.Map.of()));
 
     assertEquals(1, s.sends);
   }

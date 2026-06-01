@@ -34,7 +34,7 @@ class ReactiveHubTest {
   }
 
   private static WalChange change(String table) {
-    return new WalChange(table, "table public." + table + ": INSERT:");
+    return new WalChange(table, java.util.Map.of());
   }
 
   @Test

@@ -72,15 +72,12 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
 
 ## How the reactive part works
 
-A logical replication slot feeds an `Invalidator` that tails the WAL. Each change is matched against
-every `@PgQuery`'s generated rule, which yields the affected parameter values; subscribers on those
-values are woken and their query re-runs. The join walk is real SQL the processor derives from the
-query. For example, a `line_items` change resolves up to the `region` it rolls into.
-
-One caveat worth stating up front: the change feed currently decodes the WAL with the built-in
-`test_decoding` plugin (polled, and over streaming replication). `test_decoding`'s text output is not
-a stable interface, so a production build would use `pgoutput` or a custom logical-decoding plugin.
-This is a known v0.1 limitation, not the intended end state.
+A logical replication slot feeds an `Invalidator` that tails the WAL. The feed is decoded with
+`pgoutput`, Postgres's built-in, versioned binary logical-replication protocol (not the unstable
+`test_decoding` text format). Each change is matched against every `@PgQuery`'s generated rule, which
+yields the affected parameter values; subscribers on those values are woken and their query re-runs.
+The join walk is real SQL the processor derives from the query. For example, a `line_items` change
+resolves up to the `region` it rolls into.
 
 ## Modules
 
@@ -120,7 +117,6 @@ Honest about the gaps, since the design covers more than this repo ships:
 - Compliance beyond `@Encrypted`: enforced row-level security and audit trails are application
   patterns today, not library features here.
 - A packaged TypeScript client runtime (the processor emits readers; the client library isn't here).
-- A stable decoding plugin (`pgoutput`) in place of `test_decoding`.
 
 ## Status & requirements
 
