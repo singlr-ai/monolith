@@ -99,6 +99,10 @@ exercises the whole stack (`@PgQuery` codegen, binary writes, WAL-driven invalid
 WebSocket adapter) while registering its own HTTP and WebSocket routes. A write to a board pushes the
 fresh list to every subscriber watching that board.
 
+On the client side, [`clients/typescript`](clients/typescript) is a small TypeScript package that
+opens the WebSocket and decodes each pushed frame through the generated `<Name>Reader`, so the same
+types reach the browser.
+
 ## Goals and non-goals
 
 **Goals.** A live-subscription developer experience on a real relational database, for Java teams;
@@ -116,7 +120,6 @@ Honest about the gaps, since the design covers more than this repo ships:
   failover) is prototyped but **not in this repository**.
 - Compliance beyond `@Encrypted`: enforced row-level security and audit trails are application
   patterns today, not library features here.
-- A packaged TypeScript client runtime (the processor emits readers; the client library isn't here).
 
 ## Status & requirements
 

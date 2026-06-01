@@ -1,0 +1,23 @@
+{
+  "name": "@standardapplied/monolith-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for Monolith live queries over WebSocket.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "test": "node --test --experimental-test-coverage \"src/*.test.ts\"",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "repository": "github:singlr-ai/monolith",
+  "sideEffects": false
+}

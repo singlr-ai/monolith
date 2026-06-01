@@ -39,3 +39,14 @@ jobs:
         env:
           MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres
         run: mvn -B --no-transfer-progress clean verify
+
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test the TypeScript client
+        working-directory: clients/typescript
+        run: node --test --experimental-test-coverage "src/*.test.ts"
