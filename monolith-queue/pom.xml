@@ -6,7 +6,7 @@
   <parent>
     <groupId>com.standardapplied</groupId>
     <artifactId>monolith-parent</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
   </parent>
 
   <artifactId>monolith-queue</artifactId>
@@ -14,7 +14,7 @@
   <description>A durable, ordered, at-least-once message queue in the same Postgres as your data, so
     enqueuing composes atomically with your transactions. The one primitive under the transactional
     outbox and durable job patterns: per-key ordering, SKIP LOCKED claiming, retries with backoff,
-    dead-lettering, and LISTEN/NOTIFY dispatch. See docs/design/QUEUE.md.</description>
+    dead-lettering, and LISTEN/NOTIFY dispatch.</description>
 
   <dependencies>
     <dependency>

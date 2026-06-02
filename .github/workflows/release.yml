@@ -1,0 +1,58 @@
+name: Release
+
+# Publishes the library modules to Maven Central (com.standardapplied) via the Sonatype Central
+# Publisher. Trigger by pushing a release/** branch or running the workflow manually. Mirrors the
+# Helios release setup, with a real Postgres so the integration tests and the coverage gate that
+# `verify` runs still pass before publishing.
+#
+# Required repository secrets: MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, GPG_PRIVATE_KEY,
+# GPG_PASSPHRASE. Publishing is to the validated state; review and release in the Central portal.
+
+on:
+  push:
+    branches: ['release/**']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Logical decoding for the reactive layer's integration tests; trust auth keeps it password-free.
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=monolith_test \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 5432:5432 postgres:18 -c wal_level=logical
+          for _ in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres && exit 0
+            sleep 1
+          done
+          echo "Postgres did not become ready" >&2; exit 1
+
+      # libpq is the client library the FFM runtime binds at run time.
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y libpq5
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: temurin
+          cache: maven
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+
+      - name: Deploy to Maven Central
+        run: >
+          mvn clean deploy -Prelease --batch-mode
+          -pl monolith-api,monolith-codegen,monolith-runtime,monolith-reactive,monolith-queue,monolith-helidon
+        env:
+          MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
