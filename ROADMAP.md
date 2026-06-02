@@ -25,13 +25,16 @@ These cause outages or wrong data. In regulated/healthcare use that is unaccepta
 most differentiating and least-proven parts of the design. None are covered by the current unit/IT
 suite, which runs against a single healthy Postgres.
 
-- [ ] **1. WAL replication-slot lifecycle.** The single highest-severity operational risk: a stalled or
-  orphaned logical slot retains WAL unboundedly, fills the disk, and takes Postgres down. Needs slot
-  health monitoring (retained WAL, `active`, `wal_status`), bounded retention guidance, orphan-slot
-  cleanup, lost-slot detection and recovery (re-snapshot), and alerting through the observability seam.
-- [ ] **2. FFM / native-memory safety.** Arena / `MemorySegment` lifecycle bugs crash the JVM (SIGSEGV),
-  not throw catchable exceptions, and are invisible to `Result`. Needs long-running soak and concurrent
-  stress, native-memory leak watching, and an audit of every Arena boundary on the libpq path.
+- [x] **1. WAL replication-slot lifecycle.** Done: `Wal.health` / `SlotHealth` (retained WAL, `active`,
+  `wal_status`, `isLost`), a `SlotMonitor` that alerts through the observability seam, `Wal.dropInactive`
+  orphan cleanup, and `ReactiveHub.invalidateAll` lost-slot recovery; bounded retention via
+  `max_slot_wal_keep_size`, documented in the Live Queries runbook.
+- [~] **2. FFM / native-memory safety.** Arena / `MemorySegment` lifecycle bugs crash the JVM (SIGSEGV),
+  not throw catchable exceptions, and are invisible to `Result`. We keep FFM (see the
+  [transport decision](/design/transport/)) and earn its safety by testing it. In progress: `FfmStressIT`
+  hammers the binary path under concurrency with verified reads (soak via `MONOLITH_STRESS_SECONDS`).
+  Remaining: a longer soak in CI, native-memory leak watching, an Arena-boundary audit, and fault
+  injection (kill the server mid-stream).
 - [ ] **3. Reactive correctness under failure.** A missed invalidation shows stale data (in healthcare,
   potentially the wrong record). The at-least-once and snapshot semantics must hold under fault
   injection: slot restart, LSN gaps, connection drops mid-stream, replica failover. Needs property-based
