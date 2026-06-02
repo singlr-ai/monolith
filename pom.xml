@@ -31,6 +31,7 @@
     <module>monolith-codegen</module>
     <module>monolith-runtime</module>
     <module>monolith-reactive</module>
+    <module>monolith-queue</module>
     <module>monolith-helidon</module>
     <module>examples/collab</module>
   </modules>
@@ -91,6 +92,11 @@
       <dependency>
         <groupId>com.standardapplied</groupId>
         <artifactId>monolith-reactive</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.standardapplied</groupId>
+        <artifactId>monolith-queue</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

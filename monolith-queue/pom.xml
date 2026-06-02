@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.standardapplied</groupId>
+    <artifactId>monolith-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>monolith-queue</artifactId>
+  <name>Monolith Queue</name>
+  <description>A durable, ordered, at-least-once message queue in the same Postgres as your data, so
+    enqueuing composes atomically with your transactions. The one primitive under the transactional
+    outbox and durable job patterns: per-key ordering, SKIP LOCKED claiming, retries with backoff,
+    dead-lettering, and LISTEN/NOTIFY dispatch. See docs/design/QUEUE.md.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.standardapplied</groupId>
+      <artifactId>monolith-runtime</artifactId>
+    </dependency>
+  </dependencies>
+</project>
