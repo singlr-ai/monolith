@@ -212,10 +212,40 @@
     </plugins>
   </build>
 
-  <!-- Activated with -Prelease to publish to Maven Central (com.standardapplied). Attaches sources
-       and javadoc, GPG-signs, flattens the parent's managed versions into each artifact's POM, and
-       uploads via the Sonatype Central Publisher. Mirrors the Helios release setup. -->
   <profiles>
+    <!-- -Pbenchmarks adds the JMH module. Kept out of the default reactor so the offline
+         `mvn verify` and CI never need to download JMH or run benchmarks. Build the runner with
+         `mvn -Pbenchmarks -pl monolith-benchmarks -am package`, then run benchmarks.jar with
+         native access enabled (see the module README). -->
+    <profile>
+      <id>benchmarks</id>
+      <modules>
+        <module>monolith-benchmarks</module>
+      </modules>
+    </profile>
+
+    <!-- -Psoak runs the test fork under a deliberately small heap with native-memory tracking on, so
+         a leak or allocation-pressure bug surfaces here instead of hiding behind a dev box's abundant
+         RAM. Pair with a long MONOLITH_STRESS_SECONDS for a real soak of the FFM path. -->
+    <profile>
+      <id>soak</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <argLine>@{surefireArgLine} --enable-native-access=ALL-UNNAMED -Xmx256m
+                -XX:NativeMemoryTracking=summary</argLine>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!-- Activated with -Prelease to publish to Maven Central (com.standardapplied). Attaches sources
+         and javadoc, GPG-signs, flattens the parent's managed versions into each artifact's POM, and
+         uploads via the Sonatype Central Publisher. Mirrors the Helios release setup. -->
     <profile>
       <id>release</id>
       <build>

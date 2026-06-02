@@ -32,9 +32,11 @@ suite, which runs against a single healthy Postgres.
 - [~] **2. FFM / native-memory safety.** Arena / `MemorySegment` lifecycle bugs crash the JVM (SIGSEGV),
   not throw catchable exceptions, and are invisible to `Result`. We keep FFM (see the
   [transport decision](/design/transport/)) and earn its safety by testing it. In progress: `FfmStressIT`
-  hammers the binary path under concurrency with verified reads (soak via `MONOLITH_STRESS_SECONDS`).
-  Remaining: a longer soak in CI, native-memory leak watching, an Arena-boundary audit, and fault
-  injection (kill the server mid-stream).
+  hammers the binary path under concurrency with verified reads (soak via `MONOLITH_STRESS_SECONDS`), and
+  the `soak` Maven profile runs it under a constrained JVM (`-Xmx256m`, native-memory tracking) so a leak
+  surfaces here instead of hiding behind a dev box's abundant RAM. Remaining: a longer soak in CI,
+  native-memory leak watching over those runs, an Arena-boundary audit, and fault injection (kill the
+  server mid-stream).
 - [ ] **3. Reactive correctness under failure.** A missed invalidation shows stale data (in healthcare,
   potentially the wrong record). The at-least-once and snapshot semantics must hold under fault
   injection: slot restart, LSN gaps, connection drops mid-stream, replica failover. Needs property-based
@@ -57,8 +59,10 @@ A hard regulatory requirement for a healthcare deployment, not a nice-to-have.
 - [ ] **Observability adapter** (OpenTelemetry / Micrometer) shipped, plus health/readiness checks and
   dashboards for slots, pool, and queue depth.
 - [ ] **Runbooks** for the operational risks (slot stall, pool exhaustion, failover, queue backlog).
-- [ ] **Benchmark suite** that proves the claims: the FFM binary path's throughput/latency vs JDBC,
-  reactive fan-out at N subscribers by M changes/sec, queue throughput, pool under connection storms.
+- [~] **Benchmark suite** that proves the claims. Started: a JMH module (`monolith-benchmarks`, behind the
+  `benchmarks` profile) measures the FFM binary path's throughput/latency and parameter encoding. Remaining:
+  a JDBC baseline to compare against, reactive fan-out at N subscribers by M changes/sec, queue throughput,
+  and the pool under connection storms, all run under a constrained JVM rather than on an unbounded dev box.
 - [ ] **API stability and a road to 1.0.** A semver discipline and a deprecation policy. "The API will
   change" is disqualifying for production; a public 1.0 plan is what lets a company commit.
 
