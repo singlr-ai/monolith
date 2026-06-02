@@ -80,6 +80,10 @@ public final class Pg {
       FunctionDescriptor.of(PTR, PTR, PTR, INT, PTR, PTR, PTR, PTR, INT));
   private static final MethodHandle PQresultStatus       = h("PQresultStatus",       FunctionDescriptor.of(INT, PTR));
   private static final MethodHandle PQresultErrorMessage = h("PQresultErrorMessage", FunctionDescriptor.of(PTR, PTR));
+  private static final MethodHandle PQresultErrorField   = h("PQresultErrorField",   FunctionDescriptor.of(PTR, PTR, INT));
+
+  /** {@code PG_DIAG_SQLSTATE} field code ('C'): the five-character SQLSTATE of a failed result. */
+  private static final int PG_DIAG_SQLSTATE = 'C';
   private static final MethodHandle PQclear        = h("PQclear",        FunctionDescriptor.ofVoid(PTR));
   private static final MethodHandle PQntuples      = h("PQntuples",      FunctionDescriptor.of(INT, PTR));
   private static final MethodHandle PQbinaryTuples = h("PQbinaryTuples", FunctionDescriptor.of(INT, PTR));
@@ -142,8 +146,10 @@ public final class Pg {
       int st = (int) PQresultStatus.invokeExact(res);
       if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK) {
         String err = cstr((MemorySegment) PQresultErrorMessage.invokeExact(res));
+        String state = cstr((MemorySegment) PQresultErrorField.invokeExact(res, PG_DIAG_SQLSTATE));
         PQclear.invokeExact(res);
-        return Result.failure("exec failed (" + st + "): " + err + "\n  sql: " + sql);
+        String msg = "exec failed (" + st + "): " + err + "\n  sql: " + sql;
+        return Result.failure(msg, new PgSqlException(state, msg));
       }
       PQclear.invokeExact(res);
       return Result.success(null);
@@ -181,8 +187,10 @@ public final class Pg {
       int st = (int) PQresultStatus.invokeExact(res);
       if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK) {
         String err = cstr((MemorySegment) PQresultErrorMessage.invokeExact(res));
+        String state = cstr((MemorySegment) PQresultErrorField.invokeExact(res, PG_DIAG_SQLSTATE));
         PQclear.invokeExact(res);
-        return Result.failure("execParams failed (" + st + "): " + err + "\n  sql: " + sql);
+        String msg = "execParams failed (" + st + "): " + err + "\n  sql: " + sql;
+        return Result.failure(msg, new PgSqlException(state, msg));
       }
       return Result.success(res);
     } catch (Throwable t) { throw new RuntimeException(t); }

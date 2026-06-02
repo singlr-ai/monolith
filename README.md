@@ -67,6 +67,11 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   deliberately simpler.
 - **Real relational Postgres.** Normalized tables, JOINs, transactions, constraints. Not a triple
   store, not schemaless. The data model stays SQL.
+- **Transactions with automatic retry.** `Tx.tx(conn, work)` runs a unit of work in one transaction,
+  committing a success and rolling back a failure, and retries the transient conflicts that
+  `SERIALIZABLE` and `REPEATABLE READ` are expected to retry (serialization failures and deadlocks),
+  keyed on the Postgres `SQLSTATE` rather than the error text. See
+  [`docs/TRANSACTIONS.md`](docs/TRANSACTIONS.md).
 - **libpq, not JDBC.** Queries go through libpq, Postgres's own C client, called directly via the
   Java FFM API (JDK 22+), and results come back in the binary protocol. Because it *is* libpq, TLS and
   authentication (including SCRAM) are libpq's, not something reimplemented here.
