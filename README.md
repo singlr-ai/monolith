@@ -54,8 +54,8 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
 
 ## Documentation
 
-Full guides, concepts, and design notes: **<https://monolith.standardapplied.com>**. The docs site also
-publishes an [`llms.txt`](https://monolith.standardapplied.com/llms.txt) and `llms-full.txt` so coding
+Full guides, concepts, and design notes: **<https://singlr-ai.github.io/monolith>**. The docs site also
+publishes an [`llms.txt`](https://singlr-ai.github.io/monolith/llms.txt) and `llms-full.txt` so coding
 agents can ingest the documentation as context. A complete, runnable example app (a live, multi-client
 task board) is in [`examples/collab`](examples/collab).
 

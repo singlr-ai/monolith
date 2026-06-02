@@ -1,7 +1,7 @@
 name: Docs
 
-# Builds the docs site with Bun and deploys it to GitHub Pages (custom domain:
-# monolith.standardapplied.com, served from website/public/CNAME). Pull requests build only.
+# Builds the docs site with Bun and deploys it to GitHub Pages (project page at
+# <org>.github.io/monolith). Pull requests build only; pushes to main deploy.
 
 on:
   push:

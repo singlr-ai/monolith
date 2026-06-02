@@ -3,10 +3,12 @@ import starlight from '@astrojs/starlight';
 import starlightLlmsTxt from 'starlight-llms-txt';
 
 // https://astro.build/config
-// Root-hosted (base '/'): works on a custom domain or Firebase Hosting as-is.
-// For a github.io project page instead, set `base: '/monolith'` and the matching `site`.
+// GitHub Pages project page: served at <org>.github.io/monolith. `base` is the repo name (stable);
+// update `site` to the new org's github.io URL after the SAIL org rename (GitHub redirects bridge
+// old links). To move to a custom domain later: set base '/', site to the domain, add public/CNAME.
 export default defineConfig({
-  site: 'https://monolith.standardapplied.com',
+  site: 'https://singlr-ai.github.io',
+  base: '/monolith',
   integrations: [
     starlight({
       title: 'Monolith',
