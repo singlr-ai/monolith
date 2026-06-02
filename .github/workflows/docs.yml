@@ -1,9 +1,7 @@
 name: Docs
 
-# Builds the documentation site with Bun and validates it on every change.
-# The deploy step is intentionally omitted until the host is chosen:
-#   - GitHub Pages: add actions/upload-pages-artifact + actions/deploy-pages.
-#   - Firebase Hosting: add FirebaseExtended/action-hosting-deploy (uses website/firebase.json).
+# Builds the docs site with Bun and deploys it to GitHub Pages (custom domain:
+# monolith.standardapplied.com, served from website/public/CNAME). Pull requests build only.
 
 on:
   push:
@@ -11,6 +9,16 @@ on:
     paths: ['website/**', '.github/workflows/docs.yml']
   pull_request:
     paths: ['website/**', '.github/workflows/docs.yml']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -23,9 +31,20 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: actions/configure-pages@v5
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: docs-site
           path: website/dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
