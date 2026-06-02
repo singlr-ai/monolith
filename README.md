@@ -77,6 +77,12 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   for OpenTelemetry or Micrometer lives in its own module and is the only place those dependencies are
   pulled. It costs a single reference comparison when no observer is installed. See
   [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
+- **A durable queue in the same database.** `monolith-queue` is a durable, ordered, at-least-once
+  message queue you enqueue to *inside a transaction*, so the message commits atomically with your
+  writes. That is the property that makes a reliable transactional outbox (no dual-write window) and a
+  durable job queue out of one primitive: per-key ordering, `SKIP LOCKED` claiming across many
+  workers, retries with backoff, dead-letter inspect/replay, `LISTEN`/`NOTIFY` wakeup, and optional
+  exactly-once-within-Postgres for database handlers. See [`docs/QUEUE.md`](docs/QUEUE.md).
 - **Binary parameters, including arrays and enums.** Parameters bind in Postgres' binary format, with
   no string round-trip. A `List` binds as an array so you write set membership as `WHERE id = ANY($1)`
   (one parameter, fixed SQL, no injection surface) instead of an N-placeholder `IN (...)`, and a Java
@@ -114,9 +120,10 @@ resolves up to the `region` it rolls into.
 | `monolith-codegen` | The `javac` annotation processor. Generates DDL, readers/builders, TypeScript readers, and invalidation rules. |
 | `monolith-runtime` | libpq via Panama FFM, a connection pool, the binary tuple bridge and codecs, field encryption, and the WAL change-feed primitives. Pure JDK, no third-party dependencies. |
 | `monolith-reactive` | Live queries: `ReactiveHub` plus the WAL-tailing `Invalidator`. No web dependency. |
+| `monolith-queue` | A durable, transactional, at-least-once message queue (outbox + jobs) over the same Postgres. Pure JDK. |
 | `monolith-helidon` | Optional adapter: a Helidon SE `WsListener` that serves live queries over WebSockets. |
 
-The first four modules have no web dependency, and nothing in the core depends on `monolith-helidon`.
+Every module except `monolith-helidon` has no web dependency, and nothing in the core depends on it.
 Wire `ReactiveHub` into Spring, Quarkus, a plain `HttpServer`, or anything else the same way.
 
 ## Example
