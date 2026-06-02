@@ -175,7 +175,28 @@ scim-sql-style SQL compiler later** if richer conditions are demanded, never a r
 - **Does not:** decide policy (which roles, grants, denials, jurisdiction rules exist), that is the
   app's; evaluate access in the JVM; ship a general policy engine or workflow.
 
-## 9. Build plan (each step gated at 100%, proven against real Postgres)
+## 9. Scaling
+
+Because both enforcement and policy live in Postgres, access scales the way the data scales, and
+inherits the same trade-offs rather than inventing new ones. There is no separate authorization tier.
+
+- **Many app instances.** The app is stateless with respect to access: it sets `app.actor` per
+  transaction and Postgres decides. There is **no in-process policy cache to invalidate across nodes**,
+  the exact problem an in-JVM evaluator (CEL, OPA) creates. Run any number of instances; they are
+  identical. This is a direct dividend of enforcing in the database.
+- **Read replicas (`PgReplicaSet`).** Streaming replication copies the RLS policies and the grant and
+  role tables, so a read on a replica enforces the same policy against the replica's copy. The caveat
+  is **replication lag**: a new grant may be briefly invisible on a lagging replica, and, the
+  security-relevant direction, a **revocation or deny is not instant on replicas**. For access where
+  hard, immediate revocation matters, route that check to the primary; otherwise the bounded staleness
+  matches ordinary replica reads.
+- **Tenant shards (`ShardRouter`).** Each shard enforces its own RLS over its own grant table, which is
+  correct as long as grants are co-located with the resources they govern, `Grants` writes route to the
+  resource's shard by the same tenant key as the data. Resource grants stay local to their shard; only
+  a **global role map** (`monolith_role_member`) needs to be present on every shard (a small,
+  slowly-changing table to replicate or maintain per shard).
+
+## 10. Build plan (each step gated at 100%, proven against real Postgres)
 
 1. `Grants` + the grant/role schema + the runtime API (grant/revoke/deny/addRole/removeRole), with an
    IT proving the tuples behave.
@@ -185,7 +206,7 @@ scim-sql-style SQL compiler later** if richer conditions are demanded, never a r
 4. Docs (`docs/ACCESS.md`) and compliance-composition notes; the optional DSL->SQL compiler stays a
    documented future module.
 
-## 10. Why this is "best-in-class, or more"
+## 11. Why this is "best-in-class, or more"
 
 Most libraries give you either an authz evaluator (CEL, OPA) that runs beside the database, or an
 ORM-level check that the database does not know about. Monolith pushes a **Zanzibar-shaped unified grant
