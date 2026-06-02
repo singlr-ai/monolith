@@ -35,6 +35,40 @@ public final class Wal {
     exec(conn, "DROP PUBLICATION IF EXISTS " + publication(slot));
   }
 
+  /**
+   * The {@link SlotHealth} of {@code slot}: whether it exists, whether a consumer is attached, its
+   * {@code wal_status}, and how much WAL it is retaining. Poll this to catch a stalled consumer before
+   * its retained WAL fills the disk.
+   */
+  public static SlotHealth health(MemorySegment conn, String slot) {
+    try (Arena a = Arena.ofConfined()) {
+      List<String> rows = Pg.textColumn(a, conn,
+          "SELECT active::text || '|' || coalesce(wal_status, 'none') || '|'"
+              + " || coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn), 0)::bigint::text"
+              + " FROM pg_replication_slots WHERE slot_name = '" + slot + "'").getOrThrow();
+      return rows.isEmpty() ? new SlotHealth(false, false, "none", 0) : parseHealth(rows.get(0));
+    }
+  }
+
+  private static SlotHealth parseHealth(String row) {
+    String[] parts = row.split("\\|"); // active('true'/'false') | wal_status | retained_bytes
+    return new SlotHealth(true, Boolean.parseBoolean(parts[0]), parts[1], Long.parseLong(parts[2]));
+  }
+
+  /**
+   * Drops {@code slot} only if it has no attached consumer, to reclaim the WAL an orphaned slot (a dead
+   * consumer) is retaining without disturbing a live one. Returns whether a slot was dropped. The
+   * publication is left in place.
+   */
+  public static boolean dropInactive(MemorySegment conn, String slot) {
+    try (Arena a = Arena.ofConfined()) {
+      List<String> dropped = Pg.textColumn(a, conn,
+          "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
+              + " WHERE slot_name = '" + slot + "' AND NOT active").getOrThrow();
+      return !dropped.isEmpty();
+    }
+  }
+
   /** Pull and decode all pgoutput changes buffered since the last drain; consumes them. */
   public static List<WalChange> drain(MemorySegment conn, String slot) {
     try (Arena a = Arena.ofConfined()) {

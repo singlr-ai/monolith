@@ -73,3 +73,35 @@ decodes each pushed frame through the generated `<Name>Reader`, so the same type
 The reactive layer needs `wal_level = logical` and a replication-capable connection (the `Invalidator`
 opens its own). Subscriptions are per parameter value, so key them by the parameter your clients care
 about (a region, a board, a tenant).
+
+## Operating the change feed
+
+A logical replication slot is the one part of the reactive layer that needs operational attention. A
+slot retains write-ahead log until its consumer acknowledges it, so **if the consumer stalls or dies,
+the slot retains WAL without bound, and unbounded retention fills the disk and takes Postgres down.**
+This is the highest-severity operational risk in the reactive design, and it is silent until it is not.
+
+Monitor it. `Wal.health(conn, slot)` returns a `SlotHealth` you should poll and alert on:
+
+```java
+SlotHealth h = Wal.health(conn, "app_feed");
+// h.retainedBytes() : how much WAL the slot is holding back. Alert when it grows past a threshold.
+// h.active()        : whether a consumer is attached (a long-idle inactive slot is suspicious).
+// h.walStatus()     : 'reserved' is healthy; 'extended'/'unreserved' mean retention is at risk.
+// h.isLost()        : the slot was invalidated and changes were missed (see recovery below).
+```
+
+Set Postgres' `max_slot_wal_keep_size` so a runaway slot is capped before it can exhaust the disk; the
+cost is that an over-budget slot becomes **lost** rather than taking the database down.
+
+Clean up orphans. If a consumer dies and leaves its slot behind, reclaim the retained WAL without
+disturbing a live consumer:
+
+```java
+Wal.dropInactive(conn, "app_feed"); // drops the slot only if no consumer is attached
+```
+
+Recover from a lost slot. If `health(...).isLost()` is true, the feed has a gap: the slot outran its
+retention budget and changes were dropped. Recreate the slot and **re-query every live subscription**,
+because the in-memory results may be stale. A re-snapshot on recovery is correct because each query
+re-executes fresh; treat a lost slot as "resubscribe everyone," not "resume where we left off".
