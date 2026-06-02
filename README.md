@@ -77,6 +77,10 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   for OpenTelemetry or Micrometer lives in its own module and is the only place those dependencies are
   pulled. It costs a single reference comparison when no observer is installed. See
   [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
+- **Binary parameters, including arrays and enums.** Parameters bind in Postgres' binary format, with
+  no string round-trip. A `List` binds as an array so you write set membership as `WHERE id = ANY($1)`
+  (one parameter, fixed SQL, no injection surface) instead of an N-placeholder `IN (...)`, and a Java
+  `enum` binds to an `enum` column by its label. See [`docs/PARAMETERS.md`](docs/PARAMETERS.md).
 - **libpq, not JDBC.** Queries go through libpq, Postgres's own C client, called directly via the
   Java FFM API (JDK 22+), and results come back in the binary protocol. Because it *is* libpq, TLS and
   authentication (including SCRAM) are libpq's, not something reimplemented here.

@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -100,6 +101,13 @@ class PgCodecTest {
       assertArrayEquals(new String[0], PgCodec.decodeTextArray(PgCodec.encodeTextArray(new String[0])));
       var in = new String[] {"a", null, "ccc"};
       assertArrayEquals(in, PgCodec.decodeTextArray(PgCodec.encodeTextArray(in)));
+    }
+
+    @Test
+    void uuidArrayRoundTripsIncludingNullsAndEmpty() {
+      assertArrayEquals(new UUID[0], PgCodec.decodeUuidArray(PgCodec.encodeUuidArray(new UUID[0])));
+      var in = new UUID[] {new UUID(1L, 2L), null, new UUID(-3L, 4L)};
+      assertArrayEquals(in, PgCodec.decodeUuidArray(PgCodec.encodeUuidArray(in)));
     }
 
     @Test

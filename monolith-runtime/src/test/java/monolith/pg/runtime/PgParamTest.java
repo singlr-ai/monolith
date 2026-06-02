@@ -19,6 +19,8 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 import monolith.pg.Json;
 import org.junit.jupiter.api.DisplayName;
@@ -89,11 +91,49 @@ class PgParamTest {
     }
 
     @Test
+    void enumEncodesAsItsLabel() {
+      assertArrayEquals(new byte[] {'B'}, PgParam.encode(Sample.B));
+    }
+
+    @Test
+    void typedArraysMatchTheArrayCodec() {
+      assertArrayEquals(PgCodec.encodeIntArray(new int[] {1, 2}), PgParam.encode(new int[] {1, 2}));
+      assertArrayEquals(PgCodec.encodeLongArray(new long[] {3L}), PgParam.encode(new long[] {3L}));
+      var texts = new String[] {"a", null};
+      assertArrayEquals(PgCodec.encodeTextArray(texts), PgParam.encode(texts));
+      var ids = new UUID[] {new UUID(1L, 2L)};
+      assertArrayEquals(PgCodec.encodeUuidArray(ids), PgParam.encode(ids));
+    }
+
+    @Test
+    void listsEncodeAsArraysByInferringTheElementType() {
+      assertArrayEquals(PgCodec.encodeIntArray(new int[] {1, 2}), PgParam.encode(List.of(1, 2)));
+      assertArrayEquals(PgCodec.encodeLongArray(new long[] {3L}), PgParam.encode(List.of(3L)));
+      assertArrayEquals(PgCodec.encodeTextArray(new String[] {null, "x"}),
+          PgParam.encode(Arrays.asList(null, "x")));               // leading null is skipped to infer
+      var id = new UUID(4L, 5L);
+      assertArrayEquals(PgCodec.encodeUuidArray(new UUID[] {id}), PgParam.encode(List.of(id)));
+    }
+
+    @Test
+    void anEmptyOrAllNullListIsRejected() {
+      var ex = assertThrows(IllegalArgumentException.class, () -> PgParam.encode(List.of()));
+      assertEquals(true, ex.getMessage().contains("typed array"));
+    }
+
+    @Test
+    void aListOfAnUnsupportedElementTypeIsRejected() {
+      assertThrows(IllegalArgumentException.class, () -> PgParam.encode(List.of(1.5d)));
+    }
+
+    @Test
     void unsupportedTypeIsRejected() {
       var ex = assertThrows(IllegalArgumentException.class, () -> PgParam.encode('x'));
       assertEquals(true, ex.getMessage().contains("Character"));
     }
   }
+
+  private enum Sample { A, B }
 
   @Nested
   @DisplayName("bind")

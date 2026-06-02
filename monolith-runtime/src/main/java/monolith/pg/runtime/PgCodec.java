@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Codecs between Java values and the Postgres <b>binary</b> wire format for the
@@ -29,6 +30,7 @@ public final class PgCodec {
   public static final int OID_INT4 = 23;
   public static final int OID_INT8 = 20;
   public static final int OID_TEXT = 25;
+  public static final int OID_UUID = 2950;
 
   // numeric sign words
   private static final int NUMERIC_POS = 0x0000;
@@ -229,6 +231,42 @@ public final class PgCodec {
       byte[] bytes = new byte[elemLen];
       buf.get(bytes);
       out[i] = new String(bytes, StandardCharsets.UTF_8);
+    }
+    return out;
+  }
+
+  /** {@code uuid[]}: each element is 16 bytes; supports NULL elements (encoded as length -1). */
+  public static byte[] encodeUuidArray(UUID[] a) {
+    int ndim = a.length == 0 ? 0 : 1;
+    boolean hasNull = false;
+    int payload = 0;
+    for (UUID u : a) {
+      if (u == null) { hasNull = true; payload += 4; }
+      else { payload += 4 + 16; }
+    }
+    ByteBuffer buf = ByteBuffer.allocate(12 + (ndim == 1 ? 8 : 0) + payload);
+    buf.putInt(ndim).putInt(hasNull ? 1 : 0).putInt(OID_UUID);
+    if (ndim == 1) buf.putInt(a.length).putInt(1);
+    for (UUID u : a) {
+      if (u == null) { buf.putInt(-1); }
+      else { buf.putInt(16).putLong(u.getMostSignificantBits()).putLong(u.getLeastSignificantBits()); }
+    }
+    return buf.array();
+  }
+
+  public static UUID[] decodeUuidArray(byte[] b) {
+    ByteBuffer buf = ByteBuffer.wrap(b);
+    int ndim = buf.getInt();
+    buf.getInt();
+    buf.getInt();
+    if (ndim == 0) return new UUID[0];
+    int len = buf.getInt();
+    buf.getInt();
+    UUID[] out = new UUID[len];
+    for (int i = 0; i < len; i++) {
+      int elemLen = buf.getInt();
+      if (elemLen == -1) { out[i] = null; continue; }
+      out[i] = new UUID(buf.getLong(), buf.getLong());
     }
     return out;
   }

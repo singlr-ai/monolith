@@ -16,6 +16,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 import monolith.pg.Json;
 
@@ -77,9 +78,55 @@ public final class PgParam {
       case LocalDateTime ldt -> ByteBuffer.allocate(8).putLong(micros(ldt.toEpochSecond(ZoneOffset.UTC), ldt.getNano())).array();
       case Instant ts -> ByteBuffer.allocate(8).putLong(micros(ts.getEpochSecond(), ts.getNano())).array();
       case OffsetDateTime odt -> ByteBuffer.allocate(8).putLong(micros(odt.toInstant().getEpochSecond(), odt.toInstant().getNano())).array();
+      case Enum<?> e -> e.name().getBytes(StandardCharsets.UTF_8); // a Postgres enum receives its label
+      case int[] a -> PgCodec.encodeIntArray(a);
+      case long[] a -> PgCodec.encodeLongArray(a);
+      case String[] a -> PgCodec.encodeTextArray(a);
+      case UUID[] a -> PgCodec.encodeUuidArray(a);
+      case List<?> list -> encodeList(list);
       default -> throw new IllegalArgumentException(
           "unsupported query parameter type: " + v.getClass().getName());
     };
+  }
+
+  /**
+   * Encodes a {@code List} as a Postgres array, inferring the element type from the first non-null
+   * element. An empty or all-null list is rejected, because its element type cannot be inferred; pass
+   * a typed array (such as {@code new UUID[0]}) in that case.
+   */
+  private static byte[] encodeList(List<?> list) {
+    Object sample = null;
+    for (Object element : list) {
+      if (element != null) {
+        sample = element;
+        break;
+      }
+    }
+    return switch (sample) {
+      case Integer ignored -> PgCodec.encodeIntArray(toIntArray(list));
+      case Long ignored -> PgCodec.encodeLongArray(toLongArray(list));
+      case String ignored -> PgCodec.encodeTextArray(list.toArray(new String[0]));
+      case UUID ignored -> PgCodec.encodeUuidArray(list.toArray(new UUID[0]));
+      case null, default -> throw new IllegalArgumentException(
+          "cannot encode list parameter " + list + ": elements must be Integer, Long, String, or"
+              + " UUID, and an empty or all-null list needs a typed array (e.g. new UUID[0]) instead");
+    };
+  }
+
+  private static int[] toIntArray(List<?> list) {
+    int[] out = new int[list.size()];
+    for (int i = 0; i < out.length; i++) {
+      out[i] = (Integer) list.get(i);
+    }
+    return out;
+  }
+
+  private static long[] toLongArray(List<?> list) {
+    long[] out = new long[list.size()];
+    for (int i = 0; i < out.length; i++) {
+      out[i] = (Long) list.get(i);
+    }
+    return out;
   }
 
   private static long micros(long epochSecond, int nano) {
