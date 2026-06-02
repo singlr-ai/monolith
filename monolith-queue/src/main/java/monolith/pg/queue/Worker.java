@@ -5,6 +5,7 @@
 
 package monolith.pg.queue;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.time.Duration;
 import java.util.List;
@@ -18,6 +19,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import monolith.pg.runtime.ConnectionSource;
+import monolith.pg.runtime.Pg;
+import monolith.pg.runtime.PgParam;
 
 /**
  * Drains a topic: it claims due messages from the {@link Queue} and runs each through a
@@ -50,6 +53,7 @@ public final class Worker implements AutoCloseable {
   private final AtomicInteger active = new AtomicInteger();
   private volatile boolean running;
   private Thread control;
+  private MemorySegment listenConn; // held for the worker's life, LISTENing for enqueue notifications
 
   private Worker(Builder builder) {
     this.source = builder.source;
@@ -64,6 +68,10 @@ public final class Worker implements AutoCloseable {
 
   private Worker start() {
     running = true;
+    listenConn = source.lease().getOrThrow();
+    try (Arena arena = Arena.ofConfined()) {
+      Pg.listen(arena, listenConn, "\"monolith_queue_" + topic + "\""); // quoted channel identifier
+    }
     long beatMillis = Math.max(1, lease.toMillis() / 3);
     heartbeat.scheduleAtFixedRate(this::renewLeases, beatMillis, beatMillis, TimeUnit.MILLISECONDS);
     control = Thread.ofVirtual().name("monolith-queue-" + topic).start(this::loop);
@@ -79,7 +87,7 @@ public final class Worker implements AutoCloseable {
       }
       List<DeliveredMessage> batch = claimBatch(free);
       if (batch.isEmpty()) {
-        LockSupport.parkNanos(pollInterval.toNanos());
+        awaitNotification(); // wakes on an enqueue NOTIFY, or after the poll interval as a backstop
         continue;
       }
       for (DeliveredMessage message : batch) {
@@ -107,6 +115,29 @@ public final class Worker implements AutoCloseable {
     }
   }
 
+  /** Blocks on the LISTEN connection until an enqueue notification arrives or the poll interval elapses. */
+  private void awaitNotification() {
+    try (Arena arena = Arena.ofConfined()) {
+      Pg.waitReadable(arena, listenConn, (int) pollInterval.toMillis());
+      Pg.drainNotifications(listenConn);
+    }
+  }
+
+  /** Sends a notification on the topic's channel so a blocked {@link #awaitNotification} returns at once. */
+  private void wakeListener() {
+    MemorySegment conn = source.lease().getOrThrow();
+    try (Arena arena = Arena.ofConfined()) {
+      var p = PgParam.bind(arena, "monolith_queue_" + topic);
+      Pg.execParamsBinary(arena, conn, "SELECT pg_notify($1, '')", p.values(), p.lengths(), p.formats())
+          .map(res -> {
+            Pg.clear(res);
+            return res;
+          }).getOrThrow();
+    } finally {
+      source.release(conn);
+    }
+  }
+
   private void renewLeases() {
     if (inFlight.isEmpty()) {
       return;
@@ -124,11 +155,13 @@ public final class Worker implements AutoCloseable {
   public void close() {
     running = false;
     LockSupport.unpark(control);
+    wakeListener(); // in case the control thread is blocked in awaitNotification
     try {
       control.join();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+    source.release(listenConn);
     heartbeat.close();
   }
 

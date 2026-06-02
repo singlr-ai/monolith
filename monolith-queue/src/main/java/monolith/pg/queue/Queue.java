@@ -46,7 +46,14 @@ public final class Queue {
       CREATE UNIQUE INDEX IF NOT EXISTS monolith_queue_idem
         ON monolith_queue (topic, idem_key) WHERE idem_key IS NOT NULL;
       CREATE INDEX IF NOT EXISTS monolith_queue_status_updated
-        ON monolith_queue (status, updated_at)""";
+        ON monolith_queue (status, updated_at);
+      CREATE OR REPLACE FUNCTION monolith_queue_notify() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          PERFORM pg_notify('monolith_queue_' || NEW.topic, '');
+          RETURN NULL;
+        END $$;
+      CREATE OR REPLACE TRIGGER monolith_queue_notify_trigger
+        AFTER INSERT ON monolith_queue FOR EACH ROW EXECUTE FUNCTION monolith_queue_notify()""";
 
   private static final String ENQUEUE_SQL = """
       INSERT INTO monolith_queue (topic, msg_key, payload, idem_key, max_attempts, run_at)

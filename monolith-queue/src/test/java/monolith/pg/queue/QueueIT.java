@@ -150,6 +150,23 @@ class QueueIT {
   }
 
   @Test
+  @DisplayName("a claimed message whose lease expires is reclaimed (crash recovery)")
+  void anExpiredLeaseIsReclaimed() {
+    Queue.enqueue(conn, msg("t", null, "orphaned", null)).getOrThrow();
+
+    var first = Queue.claim(conn, "t", 1, Duration.ofSeconds(1)).getOrThrow();
+    assertEquals(1, first.size());
+    assertEquals(1, first.get(0).attempt());
+    assertTrue(Queue.claim(conn, "t", 1, Duration.ofSeconds(1)).getOrThrow().isEmpty(), "still leased");
+
+    sleep(Duration.ofSeconds(2)); // the worker "crashed" holding the lease; let it expire
+
+    var reclaimed = Queue.claim(conn, "t", 1, Duration.ofSeconds(1)).getOrThrow();
+    assertEquals(1, reclaimed.size(), "the orphaned message is reclaimed");
+    assertEquals(2, reclaimed.get(0).attempt(), "and the redelivery counts as a second attempt");
+  }
+
+  @Test
   @DisplayName("enqueue and claim surface a failure when the table is missing")
   void surfaceFailureWhenTableMissing() {
     exec("DROP TABLE monolith_queue");
@@ -186,6 +203,14 @@ class QueueIT {
   private static void exec(String sql) {
     try (Arena a = Arena.ofConfined()) {
       Pg.exec(a, conn, sql).getOrThrow();
+    }
+  }
+
+  private static void sleep(Duration duration) {
+    try {
+      Thread.sleep(duration.toMillis());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 }

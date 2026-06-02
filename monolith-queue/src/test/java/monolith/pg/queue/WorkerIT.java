@@ -132,6 +132,21 @@ class WorkerIT {
   }
 
   @Test
+  @DisplayName("an enqueue notification wakes a worker that is polling slowly")
+  void notifyWakesASlowlyPollingWorker() {
+    // A 30s poll interval: if the message is delivered within the await window, only NOTIFY could
+    // have woken the worker that fast.
+    try (Worker ignored = Queue.worker(pool, "t")
+        .withPollInterval(Duration.ofSeconds(30))
+        .withLease(Duration.ofSeconds(30))
+        .onMessage((c, m) -> Result.success(null)).start()) {
+      sleep(300); // let the worker settle into awaitNotification
+      enqueue("t", null, "ping", 5);
+      awaitUntil(() -> count("status = 'succeeded'") == 1, "the worker woke on NOTIFY and delivered");
+    }
+  }
+
+  @Test
   @DisplayName("close waits for an in-flight handler to finish")
   void closeWaitsForInFlight() throws InterruptedException {
     enqueue("t", null, "slow", 5);
