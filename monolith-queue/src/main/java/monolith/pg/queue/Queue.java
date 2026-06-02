@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import monolith.pg.runtime.ConnectionSource;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.PgParam;
 import monolith.pg.runtime.Result;
@@ -73,11 +74,32 @@ public final class Queue {
       FROM due WHERE q.id = due.id
       RETURNING q.id, q.payload, q.msg_key, q.idem_key, q.attempts, q.max_attempts""";
 
+  private static final String MARK_SUCCEEDED_SQL =
+      "UPDATE monolith_queue SET status = 'succeeded', lease_until = NULL, updated_at = now() WHERE id = $1";
+
+  private static final String MARK_PENDING_SQL = """
+      UPDATE monolith_queue
+      SET status = 'pending', lease_until = NULL, run_at = now() + ($2 * interval '1 millisecond'),
+          last_error = $3, updated_at = now()
+      WHERE id = $1""";
+
+  private static final String MARK_DEAD_SQL =
+      "UPDATE monolith_queue SET status = 'dead', lease_until = NULL, last_error = $2, updated_at = now() WHERE id = $1";
+
+  private static final String EXTEND_LEASE_SQL = """
+      UPDATE monolith_queue SET lease_until = now() + ($2 * interval '1 second'), updated_at = now()
+      WHERE id = ANY($1) AND status = 'pending'""";
+
   /** Creates the queue table and its indexes if they do not exist. Idempotent; run once at startup. */
   public static Result<Void> install(MemorySegment conn) {
     try (Arena arena = Arena.ofConfined()) {
       return Pg.exec(arena, conn, SCHEMA);
     }
+  }
+
+  /** Begins configuring a {@link Worker} that drains {@code topic} from {@code source}. */
+  public static Worker.Builder worker(ConnectionSource source, String topic) {
+    return new Worker.Builder(source, topic);
   }
 
   /**
@@ -120,6 +142,36 @@ public final class Queue {
             Pg.clear(res);
             return claimed;
           });
+    }
+  }
+
+  /** Marks a message delivered. Runs on {@code conn}, so it joins an ambient transaction if there is one. */
+  static Result<Void> markSucceeded(MemorySegment conn, long id) {
+    return update(conn, MARK_SUCCEEDED_SQL, id);
+  }
+
+  /** Returns a message to pending, due after {@code delay}, recording the error (a retry). */
+  static Result<Void> markPending(MemorySegment conn, long id, Duration delay, String error) {
+    return update(conn, MARK_PENDING_SQL, id, (double) delay.toMillis(), error);
+  }
+
+  /** Moves a message to the dead-letter state, recording the error. */
+  static Result<Void> markDead(MemorySegment conn, long id, String error) {
+    return update(conn, MARK_DEAD_SQL, id, error);
+  }
+
+  /** Pushes the lease out for the still-pending messages among {@code ids} (the worker heartbeat). */
+  static Result<Void> extendLease(MemorySegment conn, long[] ids, Duration lease) {
+    return update(conn, EXTEND_LEASE_SQL, ids, (double) lease.toSeconds());
+  }
+
+  private static Result<Void> update(MemorySegment conn, String sql, Object... params) {
+    try (Arena arena = Arena.ofConfined()) {
+      var p = PgParam.bind(arena, params);
+      return Pg.execParamsBinary(arena, conn, sql, p.values(), p.lengths(), p.formats()).map(res -> {
+        Pg.clear(res);
+        return null;
+      });
     }
   }
 

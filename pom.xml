@@ -164,6 +164,12 @@
                 <exclude>monolith/pg/runtime/Pg.class</exclude>
                 <exclude>monolith/pg/runtime/WalStream.class</exclude>
                 <exclude>monolith/pg/reactive/Invalidator.class</exclude>
+                <!-- Threaded worker driver: a daemon claim loop, virtual-thread dispatch, and a
+                     scheduled lease heartbeat. Its sequential logic lives in Delivery (gated 100%);
+                     the driver itself is integration-tested in WorkerIT but not line-gated, like the
+                     other daemon-thread components above. -->
+                <exclude>monolith/pg/queue/Worker.class</exclude>
+                <exclude>monolith/pg/queue/Worker$Builder.class</exclude>
               </excludes>
               <rules>
                 <rule>

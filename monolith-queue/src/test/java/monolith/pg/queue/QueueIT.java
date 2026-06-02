@@ -139,6 +139,17 @@ class QueueIT {
   }
 
   @Test
+  @DisplayName("extendLease pushes a claimed message's lease further out")
+  void extendLeasePushesTheLeaseOut() {
+    Queue.enqueue(conn, msg("t", null, "slow", null)).getOrThrow();
+    long id = Queue.claim(conn, "t", 1, Duration.ofMinutes(1)).getOrThrow().get(0).id();
+
+    assertEquals("f", leaseBeyond(id, "30 minutes"), "the one-minute lease is well within 30 minutes");
+    Queue.extendLease(conn, new long[] {id}, Duration.ofHours(1)).getOrThrow();
+    assertEquals("t", leaseBeyond(id, "30 minutes"), "the lease now reaches beyond 30 minutes");
+  }
+
+  @Test
   @DisplayName("enqueue and claim surface a failure when the table is missing")
   void surfaceFailureWhenTableMissing() {
     exec("DROP TABLE monolith_queue");
@@ -161,6 +172,14 @@ class QueueIT {
   private static int count(String sql) {
     try (Arena a = Arena.ofConfined()) {
       return Integer.parseInt(Pg.textColumn(a, conn, sql).getOrThrow().get(0));
+    }
+  }
+
+  private static String leaseBeyond(long id, String interval) {
+    try (Arena a = Arena.ofConfined()) {
+      return Pg.textColumn(a, conn,
+          "SELECT lease_until > now() + interval '" + interval + "' FROM monolith_queue WHERE id = " + id)
+          .getOrThrow().get(0);
     }
   }
 
