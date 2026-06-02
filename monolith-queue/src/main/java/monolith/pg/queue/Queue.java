@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import monolith.pg.runtime.ConnectionSource;
+import monolith.pg.runtime.Observability;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.PgParam;
 import monolith.pg.runtime.Result;
@@ -97,6 +98,21 @@ public final class Queue {
       UPDATE monolith_queue SET lease_until = now() + ($2 * interval '1 second'), updated_at = now()
       WHERE id = ANY($1) AND status = 'pending'""";
 
+  private static final String DEAD_LETTERS_SQL = """
+      SELECT id, msg_key, payload, attempts, last_error FROM monolith_queue
+      WHERE topic = $1 AND status = 'dead' ORDER BY id LIMIT $2""";
+
+  private static final String REPLAY_SQL = """
+      UPDATE monolith_queue
+      SET status = 'pending', attempts = 0, lease_until = NULL, run_at = now(),
+          last_error = NULL, updated_at = now()
+      WHERE id = $1 AND status = 'dead'""";
+
+  private static final String PURGE_SQL = """
+      DELETE FROM monolith_queue
+      WHERE topic = $1 AND status = 'succeeded' AND updated_at < now() - ($2 * interval '1 second')
+      RETURNING id""";
+
   /** Creates the queue table and its indexes if they do not exist. Idempotent; run once at startup. */
   public static Result<Void> install(MemorySegment conn) {
     try (Arena arena = Arena.ofConfined()) {
@@ -120,8 +136,12 @@ public final class Queue {
           message.idempotencyKey(), message.maxAttempts(), message.runAt());
       return Pg.execParamsBinary(arena, conn, ENQUEUE_SQL, p.values(), p.lengths(), p.formats())
           .map(res -> {
-            long id = Pg.ntuples(res) == 1 ? readLong(res, 0, 0) : existingId(arena, conn, message);
+            boolean inserted = Pg.ntuples(res) == 1;
+            long id = inserted ? readLong(res, 0, 0) : existingId(arena, conn, message);
             Pg.clear(res);
+            if (inserted && Observability.enabled()) {
+              Observability.emit(new QueueEvent.Enqueued(message.topic(), id));
+            }
             return id;
           });
     }
@@ -143,7 +163,7 @@ public final class Queue {
             List<DeliveredMessage> claimed = new ArrayList<>(n);
             for (int i = 0; i < n; i++) {
               claimed.add(new DeliveredMessage(
-                  readLong(res, i, 0), text(res, i, 2), Pg.getbytes(res, i, 1),
+                  readLong(res, i, 0), topic, text(res, i, 2), Pg.getbytes(res, i, 1),
                   text(res, i, 3), readInt(res, i, 4), readInt(res, i, 5)));
             }
             Pg.clear(res);
@@ -170,6 +190,43 @@ public final class Queue {
   /** Pushes the lease out for the still-pending messages among {@code ids} (the worker heartbeat). */
   static Result<Void> extendLease(MemorySegment conn, long[] ids, Duration lease) {
     return update(conn, EXTEND_LEASE_SQL, ids, (double) lease.toSeconds());
+  }
+
+  /** Lists up to {@code limit} dead-lettered messages for {@code topic}, oldest first, to inspect. */
+  public static Result<List<DeadMessage>> deadLetters(MemorySegment conn, String topic, int limit) {
+    try (Arena arena = Arena.ofConfined()) {
+      var p = PgParam.bind(arena, topic, (long) limit);
+      return Pg.execParamsBinary(arena, conn, DEAD_LETTERS_SQL, p.values(), p.lengths(), p.formats())
+          .map(res -> {
+            int n = Pg.ntuples(res);
+            List<DeadMessage> out = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+              out.add(new DeadMessage(
+                  readLong(res, i, 0), text(res, i, 1), Pg.getbytes(res, i, 2),
+                  readInt(res, i, 3), text(res, i, 4)));
+            }
+            Pg.clear(res);
+            return out;
+          });
+    }
+  }
+
+  /** Returns a dead-lettered message to pending with a fresh attempt budget, once you have fixed it. */
+  public static Result<Void> replay(MemorySegment conn, long id) {
+    return update(conn, REPLAY_SQL, id);
+  }
+
+  /** Deletes succeeded messages for {@code topic} older than {@code olderThan}; returns how many. */
+  public static Result<Integer> purgeSucceeded(MemorySegment conn, String topic, Duration olderThan) {
+    try (Arena arena = Arena.ofConfined()) {
+      var p = PgParam.bind(arena, topic, (double) olderThan.toSeconds());
+      return Pg.execParamsBinary(arena, conn, PURGE_SQL, p.values(), p.lengths(), p.formats())
+          .map(res -> {
+            int purged = Pg.ntuples(res);
+            Pg.clear(res);
+            return purged;
+          });
+    }
   }
 
   private static Result<Void> update(MemorySegment conn, String sql, Object... params) {

@@ -12,10 +12,16 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import monolith.pg.runtime.MonolithEvent;
+import monolith.pg.runtime.Observability;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.PgPool;
 import monolith.pg.runtime.Result;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -138,6 +144,50 @@ class DeliveryIT {
   void enumExposesValues() {
     assertEquals(3, DeliveryOutcome.values().length);
     assertEquals(DeliveryOutcome.DEAD, DeliveryOutcome.valueOf("DEAD"));
+  }
+
+  @Test
+  @DisplayName("it emits enqueue, succeeded, retried, and dead-lettered events")
+  void emitsObservabilityEvents() {
+    var events = Collections.synchronizedList(new ArrayList<MonolithEvent>());
+    Observability.use(events::add);
+
+    var ok = enqueueAndClaim(5);
+    Delivery.process(pool, ok, (c, m) -> Result.success(null), false, BACKOFF);
+    var retry = enqueueAndClaim(5);
+    Delivery.process(pool, retry, (c, m) -> Result.failure("retry me"), false, BACKOFF);
+    var dead = enqueueAndClaim(1);
+    Delivery.process(pool, dead, (c, m) -> Result.failure("give up"), false, BACKOFF);
+
+    var enqueued = firstOf(events, QueueEvent.Enqueued.class);
+    assertEquals("t", enqueued.topic());
+    assertEquals(ok.id(), enqueued.id());
+
+    var succeeded = firstOf(events, QueueEvent.Succeeded.class);
+    assertEquals("t", succeeded.topic());
+    assertEquals(ok.id(), succeeded.id());
+    assertEquals(1, succeeded.attempts());
+
+    var retried = firstOf(events, QueueEvent.Retried.class);
+    assertEquals("t", retried.topic());
+    assertEquals(retry.id(), retried.id());
+    assertEquals(1, retried.attempt());
+    assertEquals("retry me", retried.error());
+
+    var deadLettered = firstOf(events, QueueEvent.DeadLettered.class);
+    assertEquals("t", deadLettered.topic());
+    assertEquals(dead.id(), deadLettered.id());
+    assertEquals(1, deadLettered.attempts());
+    assertEquals("give up", deadLettered.error());
+  }
+
+  @AfterEach
+  void resetObserver() {
+    Observability.reset();
+  }
+
+  private static <E> E firstOf(List<MonolithEvent> events, Class<E> type) {
+    return events.stream().filter(type::isInstance).map(type::cast).findFirst().orElseThrow();
   }
 
   // ---- helpers ----

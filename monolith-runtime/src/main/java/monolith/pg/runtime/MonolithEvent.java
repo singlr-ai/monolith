@@ -31,4 +31,12 @@ public sealed interface MonolithEvent {
 
   /** No connection freed up within {@code waited}, so the lease gave up. */
   record PoolExhausted(Duration waited) implements MonolithEvent {}
+
+  /**
+   * Open extension point so another Monolith module (for example the queue) can emit its own events
+   * through the same {@link Observability} seam. An adapter's exhaustive {@code switch} over
+   * {@link MonolithEvent} handles these with a single {@code case Extension} arm and may switch again
+   * on the concrete type.
+   */
+  non-sealed interface Extension extends MonolithEvent {}
 }

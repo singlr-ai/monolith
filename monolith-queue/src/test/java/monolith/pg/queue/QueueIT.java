@@ -113,6 +113,7 @@ class QueueIT {
     assertEquals(java.util.Set.of("a", "c", "d"), byPayload.keySet(), "b is blocked behind a");
 
     DeliveredMessage a = byPayload.get("a");
+    assertEquals("t", a.topic());
     assertEquals("k", a.key());
     assertEquals("idem-a", a.idempotencyKey());
     assertEquals(1, a.attempt());
@@ -164,6 +165,46 @@ class QueueIT {
     var reclaimed = Queue.claim(conn, "t", 1, Duration.ofSeconds(1)).getOrThrow();
     assertEquals(1, reclaimed.size(), "the orphaned message is reclaimed");
     assertEquals(2, reclaimed.get(0).attempt(), "and the redelivery counts as a second attempt");
+  }
+
+  @Test
+  @DisplayName("dead-lettered messages can be listed and replayed with a fresh budget")
+  void deadLettersAndReplay() {
+    Queue.enqueue(conn, msg("t", "k", "poison", "idem-p")).getOrThrow();
+    long id = Queue.claim(conn, "t", 1, LEASE).getOrThrow().get(0).id();
+    Queue.markDead(conn, id, "exploded").getOrThrow();
+
+    var dead = Queue.deadLetters(conn, "t", 10).getOrThrow();
+    assertEquals(1, dead.size());
+    var dm = dead.get(0);
+    assertEquals(id, dm.id());
+    assertEquals("k", dm.key());
+    assertEquals("poison", new String(dm.payload(), StandardCharsets.UTF_8));
+    assertEquals(1, dm.attempts());
+    assertEquals("exploded", dm.lastError());
+
+    Queue.replay(conn, id).getOrThrow();
+    assertTrue(Queue.deadLetters(conn, "t", 10).getOrThrow().isEmpty(), "no longer dead");
+    var again = Queue.claim(conn, "t", 1, LEASE).getOrThrow();
+    assertEquals(1, again.get(0).attempt(), "the replayed message starts over at attempt 1");
+  }
+
+  @Test
+  @DisplayName("listing dead letters is empty when there are none")
+  void deadLettersEmptyWhenNone() {
+    assertTrue(Queue.deadLetters(conn, "t", 10).getOrThrow().isEmpty());
+  }
+
+  @Test
+  @DisplayName("purgeSucceeded deletes finished messages and reports the count")
+  void purgeSucceededDeletesFinished() {
+    Queue.enqueue(conn, msg("t", null, "done", null)).getOrThrow();
+    long id = Queue.claim(conn, "t", 1, LEASE).getOrThrow().get(0).id();
+    Queue.markSucceeded(conn, id).getOrThrow();
+
+    assertEquals(0, Queue.purgeSucceeded(conn, "t", Duration.ofHours(1)).getOrThrow(), "too recent to purge");
+    assertEquals(1, Queue.purgeSucceeded(conn, "t", Duration.ZERO).getOrThrow(), "purged with no age floor");
+    assertEquals(0, count("SELECT count(*) FROM monolith_queue"));
   }
 
   @Test

@@ -7,6 +7,7 @@ package monolith.pg.queue;
 
 import java.lang.foreign.MemorySegment;
 import monolith.pg.runtime.ConnectionSource;
+import monolith.pg.runtime.Observability;
 import monolith.pg.runtime.Result;
 import monolith.pg.runtime.Tx;
 
@@ -31,10 +32,14 @@ final class Delivery {
           ? Tx.tx(conn, c -> runHandler(c, message, handler)
               .flatMap(ignored -> Queue.markSucceeded(c, message.id())))
           : runHandler(conn, message, handler);
+      boolean observed = Observability.enabled();
       return switch (result) {
         case Result.Success<Void> ignored -> {
           if (!transactionalAck) {
             Queue.markSucceeded(conn, message.id()).getOrThrow();
+          }
+          if (observed) {
+            Observability.emit(new QueueEvent.Succeeded(message.topic(), message.id(), message.attempt()));
           }
           yield DeliveryOutcome.SUCCEEDED;
         }
@@ -42,9 +47,17 @@ final class Delivery {
           if (message.attempt() < message.maxAttempts()) {
             Queue.markPending(conn, message.id(), backoff.delayFor(message.attempt()), failed.error())
                 .getOrThrow();
+            if (observed) {
+              Observability.emit(new QueueEvent.Retried(
+                  message.topic(), message.id(), message.attempt(), failed.error()));
+            }
             yield DeliveryOutcome.RETRIED;
           }
           Queue.markDead(conn, message.id(), failed.error()).getOrThrow();
+          if (observed) {
+            Observability.emit(new QueueEvent.DeadLettered(
+                message.topic(), message.id(), message.attempt(), failed.error()));
+          }
           yield DeliveryOutcome.DEAD;
         }
       };
