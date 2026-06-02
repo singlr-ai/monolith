@@ -1,0 +1,43 @@
+---
+title: Monolith
+description: Live, typed queries on real Postgres. A Java-native data platform.
+template: splash
+hero:
+  tagline: Live, typed queries on real Postgres.
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/singlr-ai/monolith
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+Monolith is a set of small Java libraries for building applications on PostgreSQL where the schema,
+the typed data access, the client reader, and the live (reactive) queries all come from a single
+declaration. You write a record, and an annotation processor generates the rest at compile time. It
+runs on ordinary relational tables: you keep SQL, JOINs, transactions, and foreign keys.
+
+**v0.1: experimental, and the API will change.**
+
+<CardGrid stagger>
+  <Card title="Reactive over relational" icon="rocket">
+    Subscribe to a query and a parameter; when a row that affects the result changes, even two joins
+    away, the query re-runs for just those subscribers. No dataflow engine, just Postgres.
+  </Card>
+  <Card title="Typed, generated, no reflection" icon="seti:java">
+    A `@PgType` / `@PgQuery` record generates the DDL, a binary reader over the wire layout, a builder,
+    and a TypeScript reader for the same layout, at compile time.
+  </Card>
+  <Card title="libpq, not JDBC" icon="setting">
+    Queries go through libpq via the Java FFM API, in the binary protocol. TLS and SCRAM are libpq's,
+    not reimplemented.
+  </Card>
+  <Card title="Compliance, declared" icon="approve-check">
+    `@Encrypted` envelope encryption, `@Tenant` forced RLS, `@Audited` trails, and `@AccessControlled`
+    grant-based access, all enforced inside Postgres.
+  </Card>
+</CardGrid>

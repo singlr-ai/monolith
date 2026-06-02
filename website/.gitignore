@@ -1,0 +1,8 @@
+# Astro / build
+node_modules/
+dist/
+.astro/
+
+# environment
+.env
+.env.production

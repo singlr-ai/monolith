@@ -1,0 +1,108 @@
+/*
+ * Monolith docs theme. Mirrors the SAIL design system (standardapplied.com):
+ * two surfaces, paper (light) and ink (dark); vermillion "flare" as the single accent;
+ * Newsreader (display), Switzer (sans/body), JetBrains Mono (code). The SAIL oklch
+ * tokens are mapped onto Starlight's CSS custom properties below.
+ */
+
+@import '@fontsource-variable/newsreader';
+@import '@fontsource-variable/jetbrains-mono';
+
+@font-face {
+  font-family: 'Switzer';
+  src: url('/fonts/switzer-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Switzer';
+  src: url('/fonts/switzer-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Switzer';
+  src: url('/fonts/switzer-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Switzer';
+  src: url('/fonts/switzer-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --sail-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
+  --sail-sans: 'Switzer', -apple-system, 'Segoe UI', system-ui, sans-serif;
+
+  --sl-font: var(--sail-sans);
+  --sl-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* Dark = SAIL "ink" (Starlight's default theme). */
+:root,
+:root[data-theme='dark'] {
+  --sl-color-accent-low: oklch(0.32 0.11 33);
+  --sl-color-accent: oklch(0.66 0.22 33); /* flare */
+  --sl-color-accent-high: oklch(0.84 0.10 45);
+
+  --sl-color-white: oklch(0.96 0.012 80); /* ink-on: headings, strongest text */
+  --sl-color-gray-1: oklch(0.90 0.011 90);
+  --sl-color-gray-2: oklch(0.78 0.010 250);
+  --sl-color-gray-3: oklch(0.58 0.010 250); /* pencil */
+  --sl-color-gray-4: oklch(0.42 0.012 250);
+  --sl-color-gray-5: oklch(0.27 0.012 250);
+  --sl-color-gray-6: oklch(0.20 0.012 250); /* ink-lift: cards, code blocks */
+  --sl-color-black: oklch(0.16 0.010 250); /* ink: page background */
+
+  --sl-color-bg: oklch(0.16 0.010 250);
+  --sl-color-bg-nav: oklch(0.16 0.010 250);
+  --sl-color-bg-sidebar: oklch(0.16 0.010 250);
+}
+
+/* Light = SAIL "paper". */
+:root[data-theme='light'] {
+  --sl-color-accent-low: oklch(0.93 0.04 45);
+  --sl-color-accent: oklch(0.59 0.20 31); /* flare, deepened for contrast on paper */
+  --sl-color-accent-high: oklch(0.44 0.15 30);
+
+  --sl-color-white: oklch(0.18 0.012 250); /* ink-fg: headings, strongest text */
+  --sl-color-gray-1: oklch(0.26 0.012 250);
+  --sl-color-gray-2: oklch(0.36 0.012 250); /* graphite */
+  --sl-color-gray-3: oklch(0.52 0.010 250); /* pencil */
+  --sl-color-gray-4: oklch(0.68 0.008 250);
+  --sl-color-gray-5: oklch(0.88 0.005 240);
+  --sl-color-gray-6: oklch(0.94 0.004 240);
+  --sl-color-gray-7: oklch(0.97 0.003 240);
+  --sl-color-black: oklch(0.985 0.003 240); /* paper: page background */
+
+  --sl-color-bg: oklch(0.985 0.003 240);
+  --sl-color-bg-nav: oklch(0.985 0.003 240);
+  --sl-color-bg-sidebar: oklch(0.992 0.002 240);
+}
+
+/* Newsreader for display: the site title and content headings. */
+.site-title,
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6),
+h1.hero-title,
+.hero h1 {
+  font-family: var(--sail-display);
+  letter-spacing: -0.012em;
+  font-weight: 600;
+}
+
+/* The hero tagline reads as editorial display type. */
+.hero .tagline {
+  font-family: var(--sail-display);
+}
+
+::selection {
+  background-color: var(--sl-color-accent);
+  color: oklch(0.985 0.003 240);
+}

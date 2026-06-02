@@ -1,0 +1,18 @@
+{
+  "name": "monolith-docs",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.39.3",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@fontsource-variable/newsreader": "^5.2.10",
+    "astro": "^6.4.3",
+    "sharp": "^0.34.5"
+  }
+}
