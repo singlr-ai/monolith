@@ -425,6 +425,29 @@ class PgTypeProcessorTest {
       assertFalse(out.cleanRun());
       assertTrue(out.anyError("@AccessControlled id"));
     }
+
+    @Test
+    void anAttributeConditionIsAndedIntoThePolicy() throws IOException {
+      // Balanced parentheses in the predicate are allowed (they just must not be unbalanced).
+      String sql = sqlFor("@AccessControlled(where = \"(status <> 'archived' OR status IS NULL)\")"
+          + " @PgType public record Acct(java.util.UUID id, String status) {}");
+      assertTrue(sql.contains("(status <> 'archived' OR status IS NULL)"));
+      assertTrue(sql.contains("FROM monolith_grant g"), "the condition ANDs with the grant check");
+    }
+
+    @Test
+    void aStatementBreakingWhereIsRejected() {
+      assertWhereRejected("status = 'x'; DROP TABLE acct"); // statement terminator
+      assertWhereRejected("status = 'x')");                  // unbalanced close
+      assertWhereRejected("(status = 'x'");                  // unbalanced open
+    }
+
+    private void assertWhereRejected(String where) {
+      Outcome out = process("t.Acct", "package t; " + IMPORTS + " @AccessControlled(where = \"" + where
+          + "\") @PgType public record Acct(java.util.UUID id) {}");
+      assertFalse(out.cleanRun(), () -> "expected rejection of where: " + where);
+      assertTrue(out.anyError("@AccessControlled where"));
+    }
   }
 
   @Test

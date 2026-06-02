@@ -33,4 +33,14 @@ public @interface AccessControlled {
 
   /** The row-identifying component matched against a grant's resource id. Defaults to {@code "id"}. */
   String id() default "id";
+
+  /**
+   * An optional attribute condition AND-ed into the policy, a SQL boolean over this type's own columns
+   * (by their generated snake_case names) and {@code current_setting(...)}, for example
+   * {@code "status <> 'archived'"} or {@code "region = current_setting('app.region', true)"}. It is
+   * trusted developer SQL, embedded into the generated policy; the codegen rejects statement-breaking
+   * input (a {@code ;}, a SQL comment, or unbalanced parentheses) but does not otherwise parse it, so
+   * keep it to a predicate over this table's columns, no subqueries or cross-table reads.
+   */
+  String where() default "";
 }

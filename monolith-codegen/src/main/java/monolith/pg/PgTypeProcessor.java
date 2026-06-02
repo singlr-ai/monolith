@@ -180,9 +180,12 @@ public final class PgTypeProcessor extends AbstractProcessor {
       // A projection is read-only: no table to create, nothing to write.
       emitBuilder(pkg, name, fields, fixedSize, bitmapBytes);
       AccessControlled access = record.getAnnotation(AccessControlled.class);
-      if (access != null && fields.stream().noneMatch(f -> snake(f.name()).equals(snake(access.id())))) {
-        throw new IllegalArgumentException(
-            "@AccessControlled id '" + access.id() + "' is not a component of " + name);
+      if (access != null) {
+        if (fields.stream().noneMatch(f -> snake(f.name()).equals(snake(access.id())))) {
+          throw new IllegalArgumentException(
+              "@AccessControlled id '" + access.id() + "' is not a component of " + name);
+        }
+        validateWhere(access.where());
       }
       emitSql(pgName, fields, record.getAnnotation(Audited.class) != null, access);
     }
@@ -808,7 +811,7 @@ public final class PgTypeProcessor extends AbstractProcessor {
       // Access control owns the policies so it can compose tenant isolation as RESTRICTIVE (AND),
       // since two PERMISSIVE policies would OR.
       String resource = access.resource().isEmpty() ? pgName : access.resource();
-      appendAccessRls(b, pgName, resource, snake(access.id()), tenant);
+      appendAccessRls(b, pgName, resource, snake(access.id()), tenant, access.where());
     } else if (tenant != null) {
       appendTenantRls(b, pgName, tenant);
     }
@@ -837,8 +840,10 @@ public final class PgTypeProcessor extends AbstractProcessor {
    * is emitted as a RESTRICTIVE policy so it ANDs with the grant check (PERMISSIVE policies would OR).
    * The grant and role tables come from {@code Grants.install}.
    */
-  private static void appendAccessRls(StringBuilder b, String table, String resource, String idCol, Field tenant) {
-    String predicate = accessPredicate(resource, idCol);
+  private static void appendAccessRls(
+      StringBuilder b, String table, String resource, String idCol, Field tenant, String where) {
+    String grant = accessPredicate(resource, idCol);
+    String predicate = where.isEmpty() ? grant : "(" + where + ")\n    AND " + grant;
     b.append("\n-- Access control: forced row-level security keyed on grants for resource '")
         .append(resource).append("'. Requires the tables from Grants.install.\n");
     b.append("ALTER TABLE ").append(table).append(" ENABLE ROW LEVEL SECURITY;\n");
@@ -866,6 +871,31 @@ public final class PgTypeProcessor extends AbstractProcessor {
         + "      WHERE d.resource = '" + resource + "' AND d.resource_id IN (" + idCol + "::text, '*')"
         + " AND d.effect = 'deny'\n"
         + "        AND d.principal IN " + principals + ")";
+  }
+
+  /** Rejects a {@code where} predicate that could break out of the policy expression. */
+  private static void validateWhere(String where) {
+    if (where.isEmpty()) {
+      return;
+    }
+    for (String banned : java.util.List.of(";", "--", "/*")) {
+      if (where.contains(banned)) {
+        throw new IllegalArgumentException(
+            "@AccessControlled where must not contain ';' or a SQL comment: " + where);
+      }
+    }
+    int depth = 0;
+    for (int i = 0; i < where.length(); i++) {
+      char c = where.charAt(i);
+      if (c == '(') {
+        depth++;
+      } else if (c == ')' && --depth < 0) {
+        throw new IllegalArgumentException("@AccessControlled where has unbalanced parentheses: " + where);
+      }
+    }
+    if (depth != 0) {
+      throw new IllegalArgumentException("@AccessControlled where has unbalanced parentheses: " + where);
+    }
   }
 
   /** Append-only audit table + a write-capturing trigger + an immutability guard. */

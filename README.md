@@ -100,7 +100,7 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   generates forced RLS keyed on a unified grant model (RBAC, ACLs, ownership, and deny-wins consent in
   one mechanism, via the `Grants` API), composing with `@Tenant`. The app sets the actor and tenant per
   transaction with `PgSession`. See [`docs/ENCRYPTION.md`](docs/ENCRYPTION.md) and
-  [`docs/design/ACCESS.md`](docs/design/ACCESS.md).
+  [`docs/ACCESS.md`](docs/ACCESS.md).
 - **Scale-out routing.** `PgReplicaSet` routes writes to the primary and reads round-robin across
   streaming replicas; `ShardRouter` routes each tenant to its own shard for shared-nothing scale.
   Both route over a common `ConnectionSource` (which `PgPool` implements). See
