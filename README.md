@@ -14,7 +14,7 @@ changes" experience of Firebase or InstantDB *without* giving up a real relation
 
 ```java
 // One declaration → Postgres DDL, a binary reader/builder, and a TypeScript reader for the same layout.
-// @Encrypted fields are AES-GCM encrypted in the JVM; Postgres only ever stores ciphertext.
+// @Encrypted fields use envelope encryption (a per-value AES-256-GCM data key); Postgres stores only ciphertext.
 @PgType
 public record Patient(UUID id, String name, @Encrypted String ssn) {}
 
@@ -91,11 +91,13 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
 - **libpq, not JDBC.** Queries go through libpq, Postgres's own C client, called directly via the
   Java FFM API (JDK 22+), and results come back in the binary protocol. Because it *is* libpq, TLS and
   authentication (including SCRAM) are libpq's, not something reimplemented here.
-- **Compliance building blocks, declared.** `@Encrypted String` is encrypted in the JVM
-  (AES-256-GCM), so the database only ever stores ciphertext and the key never leaves your process.
-  `@Tenant` generates forced row-level security that confines every row to the current tenant (and
-  blocks cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. The
-  app sets the tenant and actor per transaction with `PgSession`.
+- **Compliance building blocks, declared.** `@Encrypted String` uses envelope encryption: each value
+  gets its own AES-256-GCM data key, wrapped by a key-encryption key that never touches Postgres, so
+  the database only ever stores ciphertext. Key custody is a `KeyProvider` SPI (pure JDK), with a
+  local provider that supports key rotation and a seam for a KMS adapter in its own module. `@Tenant`
+  generates forced row-level security that confines every row to the current tenant (and blocks
+  cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. The app sets
+  the tenant and actor per transaction with `PgSession`. See [`docs/ENCRYPTION.md`](docs/ENCRYPTION.md).
 - **Scale-out routing.** `PgReplicaSet` routes writes to the primary and reads round-robin across
   streaming replicas; `ShardRouter` routes each tenant to its own shard for shared-nothing scale.
   Both route over a common `ConnectionSource` (which `PgPool` implements). See

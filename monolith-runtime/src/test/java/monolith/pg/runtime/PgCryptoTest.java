@@ -20,13 +20,14 @@ import org.junit.jupiter.api.Test;
 class PgCryptoTest {
 
   private static final byte[] KEY = "monolith-demo-key-32-bytes-long!".getBytes();
+  private static final byte[] KEY2 = "another-demo-key-32-bytes-long!!".getBytes();
 
-  /** Reset the shared static key so each test starts from a known state. */
+  /** Reset the shared provider so each test starts unconfigured. */
   @BeforeEach
-  void clearKey() throws Exception {
-    var field = PgCrypto.class.getDeclaredField("key");
+  void clearProvider() throws Exception {
+    var field = PgCrypto.class.getDeclaredField("provider");
     field.setAccessible(true);
-    field.set(null, null);
+    field.set(null, new LocalKeyProvider());
   }
 
   @Test
@@ -36,26 +37,36 @@ class PgCryptoTest {
     byte[] wire = PgCrypto.encrypt(plaintext);
 
     assertEquals(plaintext, PgCrypto.decrypt(wire));
-    assertTrue(wire.length > plaintext.length(), "ciphertext carries a nonce and tag");
+    assertTrue(wire.length > plaintext.length(), "the wire form carries the wrapped key, nonce, and tag");
   }
 
   @Test
   void encryptingTwiceYieldsDifferentCiphertext() {
     PgCrypto.setKey(KEY);
     assertFalse(java.util.Arrays.equals(PgCrypto.encrypt("x"), PgCrypto.encrypt("x")),
-        "a fresh random nonce each time");
+        "a fresh random data key and nonce each time");
   }
 
   @Test
   void setKeyRejectsAWrongLength() {
     var ex = assertThrows(IllegalArgumentException.class, () -> PgCrypto.setKey(new byte[16]));
-    assertTrue(ex.getMessage().contains("32-byte"));
+    assertTrue(ex.getMessage().contains("32"));
   }
 
   @Test
-  void encryptAndDecryptFailWhenNoKeyIsConfigured() {
+  void encryptFailsWhenNoKeyIsConfigured() {
     assertThrows(IllegalStateException.class, () -> PgCrypto.encrypt("x"));
-    assertThrows(IllegalStateException.class, () -> PgCrypto.decrypt(new byte[20]));
+  }
+
+  @Test
+  void decryptRejectsAnUnknownWireVersion() {
+    var ex = assertThrows(IllegalStateException.class, () -> PgCrypto.decrypt(new byte[20]));
+    assertTrue(ex.getMessage().contains("version"));
+  }
+
+  @Test
+  void setKeyProviderRejectsNull() {
+    assertThrows(NullPointerException.class, () -> PgCrypto.setKeyProvider(null));
   }
 
   @Test
@@ -72,13 +83,27 @@ class PgCryptoTest {
   }
 
   @Test
+  void rotatingTheKeyKeepsOlderValuesReadable() {
+    var provider = new LocalKeyProvider();
+    provider.addKey("v1", KEY);
+    PgCrypto.setKeyProvider(provider);
+    byte[] underV1 = PgCrypto.encrypt("old-secret");
+
+    provider.addKey("v2", KEY2); // rotate: new writes use v2, v1 is still registered
+    byte[] underV2 = PgCrypto.encrypt("new-secret");
+
+    assertEquals("old-secret", PgCrypto.decrypt(underV1), "wrapped under v1, still decrypts");
+    assertEquals("new-secret", PgCrypto.decrypt(underV2), "wrapped under v2");
+  }
+
+  @Test
   void aCorruptedTagFailsToDecrypt() {
     PgCrypto.setKey(KEY);
     byte[] wire = PgCrypto.encrypt("secret");
-    wire[wire.length - 1] ^= 0xFF; // corrupt the GCM tag
+    wire[wire.length - 1] ^= 0xFF; // corrupt the data GCM tag
 
     var ex = assertThrows(RuntimeException.class, () -> PgCrypto.decrypt(wire));
-    assertFalse(ex instanceof IllegalStateException, "a crypto failure, not a missing key");
+    assertFalse(ex instanceof IllegalStateException, "a crypto failure, not a configuration error");
   }
 
   @Test
@@ -86,7 +111,6 @@ class PgCryptoTest {
     PgCrypto.setKey(KEY);
     byte[] ssn = "123-45-6789".getBytes();
     byte[] wire = PgCrypto.encrypt("123-45-6789");
-    // the raw plaintext bytes must not be a contiguous slice of the wire form
     for (int i = 0; i + ssn.length <= wire.length; i++) {
       assertFalse(java.util.Arrays.equals(ssn, java.util.Arrays.copyOfRange(wire, i, i + ssn.length)));
     }
