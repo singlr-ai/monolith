@@ -32,90 +32,32 @@ public record OrderSummary(UUID id, String customer, String status, BigDecimal t
 ```
 
 ```java
-var pool = new PgPool("host=localhost dbname=app", 16);
-PgCrypto.setKey(kms.fetchFieldKey());            // key stays in your process, never in Postgres
-
-var conn = pool.lease().getOrThrow();            // fallible calls return a Result
-try (var arena = Arena.ofConfined()) {
-    List<OrderSummaryReader> rows = OrderSummaryQuery.run(arena, conn, "EU");  // binary, over libpq
-} finally {
-    pool.release(conn);
-}
-
 // Reactive: wake when a row that affects the result changes, even a line item two joins away.
 var hub  = new ReactiveHub(pool, List.of(new OrderSummaryInvalidation()));  // rule is generated
 var feed = new Invalidator("host=localhost dbname=app", hub, "app_feed");   // tails the WAL
 hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
 ```
 
-## What it does today
+## What it does
 
-- **One declaration, generated outputs.** A `@PgType` / `@PgQuery` record generates the DDL, a
-  binary reader over the Postgres wire layout (a `MemorySegment`), a builder, a TypeScript reader for
-  the identical layout, and, for `@PgQuery`, the reactive invalidation rule. All at compile time, with
-  no runtime reflection.
-- **Schema migrations.** `Migrator` applies ordered, versioned migrations once each, in their own
-  transactions, recorded in a tracking table, and guarded by CRC32 checksums (idempotent, refuses
-  edited or out-of-order migrations). It is forward-only by design, with `status` to preview the plan,
-  repeatable migrations for views and functions, and `baseline` to adopt an existing database. Pairs
-  with the codegen's `schema.lock` drift detection. See [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
-- **Live queries over joined tables.** Subscribe to a query and a parameter. When a row that affects
-  the result changes, the generated rule maps the change back to the affected parameter values
-  (walking joins where needed) and the query is re-run for just those subscribers. This is precise
-  re-execution, not incremental view maintenance. There is no dataflow engine, just Postgres and
-  generated SQL. If you need true IVM, use [Materialize](https://materialize.com); this is
-  deliberately simpler.
-- **Real relational Postgres.** Normalized tables, JOINs, transactions, constraints. Not a triple
-  store, not schemaless. The data model stays SQL.
-- **Transactions with automatic retry.** `Tx.tx(conn, work)` runs a unit of work in one transaction,
-  committing a success and rolling back a failure, and retries the transient conflicts that
-  `SERIALIZABLE` and `REPEATABLE READ` are expected to retry (serialization failures and deadlocks),
-  keyed on the Postgres `SQLSTATE` rather than the error text. See
-  [`docs/TRANSACTIONS.md`](docs/TRANSACTIONS.md).
-- **Observability seam, dependency-free.** The runtime emits its transactions and pool leases as a
-  sealed set of events through a one-method `MonolithObserver`. The core stays pure JDK; an adapter
-  for OpenTelemetry or Micrometer lives in its own module and is the only place those dependencies are
-  pulled. It costs a single reference comparison when no observer is installed. See
-  [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
-- **A durable queue in the same database.** `monolith-queue` is a durable, ordered, at-least-once
-  message queue you enqueue to *inside a transaction*, so the message commits atomically with your
-  writes. That is the property that makes a reliable transactional outbox (no dual-write window) and a
-  durable job queue out of one primitive: per-key ordering, `SKIP LOCKED` claiming across many
-  workers, retries with backoff, dead-letter inspect/replay, `LISTEN`/`NOTIFY` wakeup, and optional
-  exactly-once-within-Postgres for database handlers. See [`docs/QUEUE.md`](docs/QUEUE.md).
-- **Binary parameters, including arrays and enums.** Parameters bind in Postgres' binary format, with
-  no string round-trip. A `List` binds as an array so you write set membership as `WHERE id = ANY($1)`
-  (one parameter, fixed SQL, no injection surface) instead of an N-placeholder `IN (...)`, and a Java
-  `enum` binds to an `enum` column by its label. A query you run repeatedly on a held connection can be
-  a `Prepared` statement, parsed and planned once. See [`docs/PARAMETERS.md`](docs/PARAMETERS.md).
-- **libpq, not JDBC.** Queries go through libpq, Postgres's own C client, called directly via the
-  Java FFM API (JDK 22+), and results come back in the binary protocol. Because it *is* libpq, TLS and
-  authentication (including SCRAM) are libpq's, not something reimplemented here.
-- **Compliance building blocks, declared.** `@Encrypted String` uses envelope encryption: each value
-  gets its own AES-256-GCM data key, wrapped by a key-encryption key that never touches Postgres, so
-  the database only ever stores ciphertext. Key custody is a `KeyProvider` SPI (pure JDK), with a
-  local provider that supports key rotation and a seam for a KMS adapter in its own module. `@Tenant`
-  generates forced row-level security that confines every row to the current tenant (and blocks
-  cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. `@AccessControlled`
-  generates forced RLS keyed on a unified grant model (RBAC, ACLs, ownership, and deny-wins consent in
-  one mechanism, via the `Grants` API), composing with `@Tenant`. The app sets the actor and tenant per
-  transaction with `PgSession`. See [`docs/ENCRYPTION.md`](docs/ENCRYPTION.md) and
-  [`docs/ACCESS.md`](docs/ACCESS.md).
-- **Scale-out routing.** `PgReplicaSet` routes writes to the primary and reads round-robin across
-  streaming replicas; `ShardRouter` routes each tenant to its own shard for shared-nothing scale.
-  Both route over a common `ConnectionSource` (which `PgPool` implements). See
-  [`docs/SCALING.md`](docs/SCALING.md) for the full picture, including read-your-writes and failover.
-- **A library, not a platform.** The core has no web framework. Bring your own `main` and routes; an
-  optional Helidon WebSocket adapter is included for serving live queries.
+- **One declaration, generated outputs**: DDL, a binary reader/builder over the Postgres wire layout, a
+  TypeScript reader, and a reactive invalidation rule, at compile time, no runtime reflection.
+- **Live queries over joined tables**: precise re-execution, not incremental view maintenance; the
+  generated rule maps a change back to the affected subscribers, walking joins where needed.
+- **libpq, not JDBC**: the binary protocol via the Java FFM API; TLS and SCRAM are libpq's.
+- **Transactions with automatic retry**, **schema migrations**, **binary parameters** (arrays, enums,
+  prepared statements), and a **durable transactional queue** (outbox + jobs in one primitive).
+- **Compliance in the database**: `@Encrypted` envelope encryption, `@Tenant` and `@AccessControlled`
+  forced row-level security (a unified RBAC/ACL/consent grant model), `@Audited` trails.
+- **Scale-out routing**: read replicas and tenant sharding over a common `ConnectionSource`.
+- **A library, not a platform**: pure-JDK core, no web framework; bring your own `main` and routes.
 
-## How the reactive part works
+## Documentation
 
-A logical replication slot feeds an `Invalidator` that tails the WAL. The feed is decoded with
-`pgoutput`, Postgres's built-in, versioned binary logical-replication protocol (not the unstable
-`test_decoding` text format). Each change is matched against every `@PgQuery`'s generated rule, which
-yields the affected parameter values; subscribers on those values are woken and their query re-runs.
-The join walk is real SQL the processor derives from the query. For example, a `line_items` change
-resolves up to the `region` it rolls into.
+Full guides, concepts, and design notes: **<https://monolith.standardapplied.com>**. The docs site also
+publishes an [`llms.txt`](https://monolith.standardapplied.com/llms.txt) and `llms-full.txt` so coding
+agents can ingest the documentation as context. A complete, runnable example app (a live, multi-client
+task board) is in [`examples/collab`](examples/collab).
 
 ## Modules
 
@@ -123,47 +65,23 @@ resolves up to the `region` it rolls into.
 |---|---|
 | `monolith-api` | Declaration annotations: `@PgType`, `@PgQuery`, `@PgProjection`, `@PgNull`, `@Encrypted`, `@Tenant`, `@Audited`, `@AccessControlled`, `Json`. |
 | `monolith-codegen` | The `javac` annotation processor. Generates DDL, readers/builders, TypeScript readers, and invalidation rules. |
-| `monolith-runtime` | libpq via Panama FFM, a connection pool, the binary tuple bridge and codecs, field encryption, and the WAL change-feed primitives. Pure JDK, no third-party dependencies. |
+| `monolith-runtime` | libpq via Panama FFM, a connection pool, the binary tuple bridge and codecs, transactions, field encryption, and the WAL change-feed primitives. Pure JDK. |
 | `monolith-reactive` | Live queries: `ReactiveHub` plus the WAL-tailing `Invalidator`. No web dependency. |
 | `monolith-queue` | A durable, transactional, at-least-once message queue (outbox + jobs) over the same Postgres. Pure JDK. |
 | `monolith-helidon` | Optional adapter: a Helidon SE `WsListener` that serves live queries over WebSockets. |
 
 Every module except `monolith-helidon` has no web dependency, and nothing in the core depends on it.
-Wire `ReactiveHub` into Spring, Quarkus, a plain `HttpServer`, or anything else the same way.
-
-## Example
-
-[`examples/collab`](examples/collab) is a complete, runnable app: a live, multi-client task board. It
-exercises the whole stack (`@PgQuery` codegen, binary writes, WAL-driven invalidation, and the
-WebSocket adapter) while registering its own HTTP and WebSocket routes. A write to a board pushes the
-fresh list to every subscriber watching that board.
-
-On the client side, [`clients/typescript`](clients/typescript) is a small TypeScript package that
-opens the WebSocket and decodes each pushed frame through the generated `<Name>Reader`, so the same
-types reach the browser.
-
-## Goals and non-goals
-
-**Goals.** A live-subscription developer experience on a real relational database, for Java teams;
-type safety carried from the database row to the client, generated rather than hand-written and kept
-in sync; and a set of libraries you embed, not a platform you adopt.
-
-**Non-goals.** It is not an incremental-view-maintenance engine, not an ORM (you write SQL), and not a
-managed service.
-
-## Not here yet
-
-Honest about the gaps:
-
-- Some scaling concerns are deployment topology, not library code: the reactive fan-out gateway for
-  very large fleets, and automatic failover, are documented in [`docs/SCALING.md`](docs/SCALING.md)
-  rather than shipped as code.
 
 ## Status & requirements
 
 **v0.1: experimental; APIs will change.** Requires **JDK 25+** (Panama FFM, virtual threads) and
 **PostgreSQL 14+** (`wal_level = logical` for the reactive layer). **macOS and Linux** (libpq is loaded
 via FFM); Windows via WSL2.
+
+**Goals.** A live-subscription developer experience on a real relational database, for Java teams; type
+safety carried from the database row to the client; libraries you embed, not a platform you adopt.
+**Non-goals.** Not an incremental-view-maintenance engine, not an ORM (you write SQL), not a managed
+service.
 
 ## License
 
