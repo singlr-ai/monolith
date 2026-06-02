@@ -1,15 +1,15 @@
 name: Release
 
 # Publishes the library modules to Maven Central (com.standardapplied) via the Sonatype Central
-# Publisher. Trigger by pushing a release/** branch or running the workflow manually. Mirrors the
-# Helios release setup, with a real Postgres so the integration tests and the coverage gate that
-# `verify` runs still pass before publishing.
+# Publisher. Triggered by pushing a version tag (v*), a release/** branch, or a manual dispatch, with
+# a real Postgres so the integration tests and the coverage gate that `verify` runs pass first.
 #
 # Required repository secrets: MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, GPG_PRIVATE_KEY,
 # GPG_PASSPHRASE. Publishing is to the validated state; review and release in the Central portal.
 
 on:
   push:
+    tags: ['v*']
     branches: ['release/**']
   workflow_dispatch:
 
