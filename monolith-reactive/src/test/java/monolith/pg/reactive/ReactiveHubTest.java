@@ -104,6 +104,21 @@ class ReactiveHubTest {
   }
 
   @Test
+  void invalidateAllWakesEverySubscriberAndSwallowsAFailingOne() {
+    var hub = new ReactiveHub(null, List.of());
+    var a = new AtomicInteger();
+    var b = new AtomicInteger();
+    hub.subscribe("Q1", "A", a::incrementAndGet);
+    hub.subscribe("Q2", "B", b::incrementAndGet);
+    hub.subscribe("Q2", "C", () -> { throw new RuntimeException("dead subscriber"); });
+
+    assertDoesNotThrow(hub::invalidateAll);
+
+    assertEquals(1, a.get(), "every subscriber across queries and params is woken");
+    assertEquals(1, b.get());
+  }
+
+  @Test
   void unsubscribeIsANoOpForAnUnknownQueryOrParam() {
     var hub = new ReactiveHub(null, List.of());
     hub.subscribe("Q", "A", () -> { });

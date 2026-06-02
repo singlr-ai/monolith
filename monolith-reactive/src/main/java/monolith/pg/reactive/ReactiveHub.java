@@ -70,6 +70,24 @@ public final class ReactiveHub {
     }
   }
 
+  /**
+   * Wake every subscriber, regardless of param. Use this to recover after a lost replication slot: the
+   * change feed had a gap, so every live result must be re-queried fresh rather than resumed.
+   */
+  public void invalidateAll() {
+    for (Map<String, Set<Subscription>> byParam : buckets.values()) {
+      for (Set<Subscription> subs : byParam.values()) {
+        for (Subscription s : subs) {
+          try {
+            s.listener.onInvalidate();
+          } catch (RuntimeException ignore) {
+            // a dead subscriber; the transport's close path removes it
+          }
+        }
+      }
+    }
+  }
+
   /** Apply one change-feed event: wake exactly the subscribers each rule marks stale. */
   public void apply(WalChange change) {
     for (PgInvalidationRule rule : rules) {

@@ -91,6 +91,14 @@ SlotHealth h = Wal.health(conn, "app_feed");
 // h.isLost()        : the slot was invalidated and changes were missed (see recovery below).
 ```
 
+For automatic alerting, run a `SlotMonitor`: it polls the slot on an interval and emits the health
+through the [observability seam](/guides/observability/) as `ReactiveEvent.SlotHealthChecked` (and
+`ReactiveEvent.SlotLost`), so your metrics backend sees it without you writing a poll loop.
+
+```java
+SlotMonitor.start(pool, "app_feed", Duration.ofSeconds(30)); // emits while open; close() to stop
+```
+
 Set Postgres' `max_slot_wal_keep_size` so a runaway slot is capped before it can exhaust the disk; the
 cost is that an over-budget slot becomes **lost** rather than taking the database down.
 
@@ -101,7 +109,8 @@ disturbing a live consumer:
 Wal.dropInactive(conn, "app_feed"); // drops the slot only if no consumer is attached
 ```
 
-Recover from a lost slot. If `health(...).isLost()` is true, the feed has a gap: the slot outran its
-retention budget and changes were dropped. Recreate the slot and **re-query every live subscription**,
-because the in-memory results may be stale. A re-snapshot on recovery is correct because each query
-re-executes fresh; treat a lost slot as "resubscribe everyone," not "resume where we left off".
+Recover from a lost slot. When `health(...).isLost()` is true (the `SlotMonitor` emits `SlotLost`), the
+feed has a gap: the slot outran its retention budget and changes were dropped. Recreate the slot
+(`Wal.recreate`) and call `ReactiveHub.invalidateAll()`, which wakes **every** subscriber so each
+re-queries fresh. A re-snapshot on recovery is correct because each query re-executes from scratch;
+treat a lost slot as "resubscribe everyone," not "resume where we left off".
