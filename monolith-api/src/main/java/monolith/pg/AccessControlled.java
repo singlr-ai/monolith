@@ -39,8 +39,10 @@ public @interface AccessControlled {
    * (by their generated snake_case names) and {@code current_setting(...)}, for example
    * {@code "status <> 'archived'"} or {@code "region = current_setting('app.region', true)"}. It is
    * trusted developer SQL, embedded into the generated policy; the codegen rejects statement-breaking
-   * input (a {@code ;}, a SQL comment, or unbalanced parentheses) but does not otherwise parse it, so
-   * keep it to a predicate over this table's columns, no subqueries or cross-table reads.
+   * input (a {@code ;}, a SQL comment, or unbalanced parentheses) but does not otherwise parse it. A
+   * condition over this table's columns is the common case; a subquery to another table is also valid
+   * (the connection role then needs {@code SELECT} on it), though for hot paths prefer materializing
+   * the relationship into grants. See {@code docs/ACCESS.md}.
    */
   String where() default "";
 }

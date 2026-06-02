@@ -147,6 +147,18 @@ class GrantsIT {
   }
 
   @Test
+  @DisplayName("a hydrated session attribute is readable by current_setting (the basis for attribute checks)")
+  void aHydratedAttributeIsReadable() {
+    try (Arena a = Arena.ofConfined()) {
+      Pg.exec(a, app, "BEGIN").getOrThrow();
+      PgSession.set(a, app, "app.tier", "gold"); // the app hydrates an actor attribute once
+      String tier = Pg.textColumn(a, app, "SELECT current_setting('app.tier', true)").getOrThrow().get(0);
+      Pg.exec(a, app, "COMMIT").getOrThrow();
+      assertEquals("gold", tier, "a policy or where-clause can read this with current_setting");
+    }
+  }
+
+  @Test
   @DisplayName("granting twice is idempotent")
   void grantingTwiceIsIdempotent() {
     Grants.grant(admin, "alice", "acl_patient", P1, "care_team").getOrThrow();
