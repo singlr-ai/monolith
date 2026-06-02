@@ -72,6 +72,11 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   `SERIALIZABLE` and `REPEATABLE READ` are expected to retry (serialization failures and deadlocks),
   keyed on the Postgres `SQLSTATE` rather than the error text. See
   [`docs/TRANSACTIONS.md`](docs/TRANSACTIONS.md).
+- **Observability seam, dependency-free.** The runtime emits its transactions and pool leases as a
+  sealed set of events through a one-method `MonolithObserver`. The core stays pure JDK; an adapter
+  for OpenTelemetry or Micrometer lives in its own module and is the only place those dependencies are
+  pulled. It costs a single reference comparison when no observer is installed. See
+  [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 - **libpq, not JDBC.** Queries go through libpq, Postgres's own C client, called directly via the
   Java FFM API (JDK 22+), and results come back in the binary protocol. Because it *is* libpq, TLS and
   authentication (including SCRAM) are libpq's, not something reimplemented here.

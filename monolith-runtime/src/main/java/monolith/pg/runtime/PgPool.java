@@ -52,11 +52,19 @@ public final class PgPool implements ConnectionSource {
 
   /** Leases an exclusive connection, or a {@link Result.Failure} if none frees up in time. */
   public Result<MemorySegment> lease() {
+    long start = System.nanoTime();
     try {
       MemorySegment c = idle.poll(leaseTimeout.toNanos(), TimeUnit.NANOSECONDS);
-      return c == null
-          ? Result.failure("pool exhausted, no connection available within " + leaseTimeout)
-          : Result.success(c);
+      if (c == null) {
+        if (Observability.enabled()) {
+          Observability.emit(new MonolithEvent.PoolExhausted(leaseTimeout));
+        }
+        return Result.failure("pool exhausted, no connection available within " + leaseTimeout);
+      }
+      if (Observability.enabled()) {
+        Observability.emit(new MonolithEvent.ConnectionLeased(System.nanoTime() - start));
+      }
+      return Result.success(c);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return Result.failure("interrupted while leasing a connection", e);

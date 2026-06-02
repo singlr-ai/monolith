@@ -68,11 +68,23 @@ public final class Tx {
   /** Run {@code work} in a transaction, retrying a transient conflict per {@code retry}. */
   public static <T> Result<T> tx(MemorySegment conn, Retry retry, Work<T> work) {
     Result<T> result = runOnce(conn, work);
+    String retryState = retryableSqlState(result); // "" unless a transient conflict
     int attempt = 1;
-    while (attempt < retry.maxAttempts() && isRetryable(result)) {
+    while (attempt < retry.maxAttempts() && !retryState.isEmpty()) {
+      if (Observability.enabled()) {
+        Observability.emit(new MonolithEvent.TransactionRetried(attempt, retryState));
+      }
       LockSupport.parkNanos(retry.backoff().multipliedBy(attempt).toNanos());
       attempt++;
       result = runOnce(conn, work);
+      retryState = retryableSqlState(result);
+    }
+    if (Observability.enabled()) {
+      Observability.emit(switch (result) {
+        case Result.Success<T> _ -> new MonolithEvent.TransactionCommitted(attempt);
+        case Result.Failure<T> failed ->
+            new MonolithEvent.TransactionRolledBack(attempt, causeSqlState(failed));
+      });
     }
     return result;
   }
@@ -90,10 +102,18 @@ public final class Tx {
     }
   }
 
-  private static boolean isRetryable(Result<?> result) {
+  /** The SQLSTATE if {@code result} is a transient conflict worth retrying, otherwise {@code ""}. */
+  private static String retryableSqlState(Result<?> result) {
     return result instanceof Result.Failure<?> failed
         && failed.cause() instanceof PgSqlException sql
-        && RETRYABLE.contains(sql.sqlState());
+        && RETRYABLE.contains(sql.sqlState())
+        ? sql.sqlState()
+        : "";
+  }
+
+  /** The SQLSTATE behind a failure, or {@code ""} when it was an application-level failure. */
+  private static String causeSqlState(Result.Failure<?> failed) {
+    return failed.cause() instanceof PgSqlException sql ? sql.sqlState() : "";
   }
 
   private Tx() {}
