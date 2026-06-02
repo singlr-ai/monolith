@@ -78,6 +78,10 @@ public final class Pg {
   private static final MethodHandle PQexec         = h("PQexec",         FunctionDescriptor.of(PTR, PTR, PTR));
   private static final MethodHandle PQexecParams   = h("PQexecParams",
       FunctionDescriptor.of(PTR, PTR, PTR, INT, PTR, PTR, PTR, PTR, INT));
+  private static final MethodHandle PQprepare      = h("PQprepare",
+      FunctionDescriptor.of(PTR, PTR, PTR, PTR, INT, PTR));
+  private static final MethodHandle PQexecPrepared = h("PQexecPrepared",
+      FunctionDescriptor.of(PTR, PTR, PTR, INT, PTR, PTR, PTR, INT));
   private static final MethodHandle PQresultStatus       = h("PQresultStatus",       FunctionDescriptor.of(INT, PTR));
   private static final MethodHandle PQresultErrorMessage = h("PQresultErrorMessage", FunctionDescriptor.of(PTR, PTR));
   private static final MethodHandle PQresultErrorField   = h("PQresultErrorField",   FunctionDescriptor.of(PTR, PTR, INT));
@@ -169,31 +173,82 @@ public final class Pg {
     try {
       int n = values.length;
       MemorySegment cmd = arena.allocateFrom(sql, StandardCharsets.UTF_8);
-      MemorySegment valuesArr = MemorySegment.NULL;
-      MemorySegment lengthsArr = MemorySegment.NULL;
-      MemorySegment formatsArr = MemorySegment.NULL;
-      if (n > 0) {
-        valuesArr = arena.allocate(PTR, n);
-        lengthsArr = arena.allocate(INT, n);
-        formatsArr = arena.allocate(INT, n);
-        for (int i = 0; i < n; i++) {
-          valuesArr.setAtIndex(PTR, i, values[i] == null ? MemorySegment.NULL : values[i]);
-          lengthsArr.setAtIndex(INT, i, lengths[i]);
-          formatsArr.setAtIndex(INT, i, formats[i]);
-        }
-      }
+      MemorySegment[] p = paramArrays(arena, values, lengths, formats);
       MemorySegment res = (MemorySegment) PQexecParams.invokeExact(
-          conn, cmd, n, MemorySegment.NULL, valuesArr, lengthsArr, formatsArr, 1 /* binary result */);
+          conn, cmd, n, MemorySegment.NULL, p[0], p[1], p[2], 1 /* binary result */);
+      return result(res, "execParams", sql);
+    } catch (Throwable t) { throw new RuntimeException(t); }
+  }
+
+  /**
+   * Parses and plans {@code sql} once as a named prepared statement on {@code conn}, so it can be run
+   * many times with {@link #execPrepared} without re-parsing. The statement lives on the connection
+   * until it is deallocated or the connection's session state is reset. A SQL error is a
+   * {@link Result.Failure}.
+   */
+  public static Result<Void> prepare(Arena arena, MemorySegment conn, String name, String sql) {
+    try {
+      MemorySegment res = (MemorySegment) PQprepare.invokeExact(conn,
+          (MemorySegment) arena.allocateFrom(name, StandardCharsets.UTF_8),
+          (MemorySegment) arena.allocateFrom(sql, StandardCharsets.UTF_8),
+          0, MemorySegment.NULL); // 0 param types: let Postgres infer from the query
       int st = (int) PQresultStatus.invokeExact(res);
-      if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK) {
+      if (st != PGRES_COMMAND_OK) {
         String err = cstr((MemorySegment) PQresultErrorMessage.invokeExact(res));
         String state = cstr((MemorySegment) PQresultErrorField.invokeExact(res, PG_DIAG_SQLSTATE));
         PQclear.invokeExact(res);
-        String msg = "execParams failed (" + st + "): " + err + "\n  sql: " + sql;
+        String msg = "prepare failed (" + st + "): " + err + "\n  sql: " + sql;
         return Result.failure(msg, new PgSqlException(state, msg));
       }
-      return Result.success(res);
+      PQclear.invokeExact(res);
+      return Result.success(null);
     } catch (Throwable t) { throw new RuntimeException(t); }
+  }
+
+  /** Executes a statement previously {@link #prepare}d under {@code name}, with binary params and result. */
+  public static Result<MemorySegment> execPrepared(
+      Arena arena, MemorySegment conn, String name,
+      MemorySegment[] values, int[] lengths, int[] formats) {
+    try {
+      int n = values.length;
+      MemorySegment stmt = arena.allocateFrom(name, StandardCharsets.UTF_8);
+      MemorySegment[] p = paramArrays(arena, values, lengths, formats);
+      MemorySegment res = (MemorySegment) PQexecPrepared.invokeExact(
+          conn, stmt, n, p[0], p[1], p[2], 1 /* binary result */);
+      return result(res, "execPrepared " + name, name);
+    } catch (Throwable t) { throw new RuntimeException(t); }
+  }
+
+  /** Builds the {values, lengths, formats} native arrays for a binary parameter call (NULLs when empty). */
+  private static MemorySegment[] paramArrays(
+      Arena arena, MemorySegment[] values, int[] lengths, int[] formats) {
+    int n = values.length;
+    if (n == 0) {
+      return new MemorySegment[] {MemorySegment.NULL, MemorySegment.NULL, MemorySegment.NULL};
+    }
+    MemorySegment valuesArr = arena.allocate(PTR, n);
+    MemorySegment lengthsArr = arena.allocate(INT, n);
+    MemorySegment formatsArr = arena.allocate(INT, n);
+    for (int i = 0; i < n; i++) {
+      valuesArr.setAtIndex(PTR, i, values[i] == null ? MemorySegment.NULL : values[i]);
+      lengthsArr.setAtIndex(INT, i, lengths[i]);
+      formatsArr.setAtIndex(INT, i, formats[i]);
+    }
+    return new MemorySegment[] {valuesArr, lengthsArr, formatsArr};
+  }
+
+  /** Wraps a binary result handle: success carries it (caller clears), a SQL error carries its SQLSTATE. */
+  private static Result<MemorySegment> result(MemorySegment res, String what, String detail)
+      throws Throwable {
+    int st = (int) PQresultStatus.invokeExact(res);
+    if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK) {
+      String err = cstr((MemorySegment) PQresultErrorMessage.invokeExact(res));
+      String state = cstr((MemorySegment) PQresultErrorField.invokeExact(res, PG_DIAG_SQLSTATE));
+      PQclear.invokeExact(res);
+      String msg = what + " failed (" + st + "): " + err + "\n  sql: " + detail;
+      return Result.failure(msg, new PgSqlException(state, msg));
+    }
+    return Result.success(res);
   }
 
   public static int ntuples(MemorySegment res) {

@@ -56,3 +56,34 @@ PeopleByMoodQuery.run(arena, conn, Mood.sad);
 ```
 
 The Java constant name must match the Postgres enum label.
+
+## Prepared statements
+
+When you hold a connection and run the same SQL repeatedly (a bulk insert, an update loop, a hot
+query inside a transaction), prepare it once so Postgres parses and plans it a single time, then
+execute it many times:
+
+```java
+var conn = pool.lease().getOrThrow();
+try {
+  Prepared insert = Prepared.create(conn,
+      "INSERT INTO widgets (id, name) VALUES ($1, $2)").getOrThrow();
+  for (var w : widgets) {
+    Pg.clear(insert.execute(w.id(), w.name()).getOrThrow()); // bind + run, no re-parse
+  }
+} finally {
+  pool.release(conn);
+}
+```
+
+`execute` binds through the same `PgParam` path, so arrays and enums work as parameters here too. A
+success carries the binary result handle, which you `Pg.clear` (or read through a generated
+`<Name>Reader` first); a failure carries its SQLSTATE, so a prepared statement run inside
+[`Tx`](TRANSACTIONS.md) takes part in the same retry of transient conflicts.
+
+A prepared statement belongs to **one connection**. It is valid while you hold that connection, not
+across leases: when the connection returns to the pool, the pool clears its session state and the
+statement is deallocated. So prepare inside the scope that reuses the connection (a held lease or a
+transaction). Caching a statement across leases would need the pool to preserve plans on reset, which
+it does not do today.
+
