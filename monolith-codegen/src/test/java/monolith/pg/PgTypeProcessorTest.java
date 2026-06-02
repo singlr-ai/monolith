@@ -384,6 +384,47 @@ class PgTypeProcessorTest {
       assertFalse(out.cleanRun());
       assertTrue(out.anyError("@Tenant is only supported"));
     }
+
+    @Test
+    void anAccessControlledTypeGeneratesGrantBasedRls() throws IOException {
+      String sql = sqlFor("@AccessControlled @PgType public record Acct(java.util.UUID id, int n) {}");
+      assertTrue(sql.contains("FORCE ROW LEVEL SECURITY"));
+      assertTrue(sql.contains("CREATE POLICY acct_access ON acct"));
+      assertTrue(sql.contains("FROM monolith_grant g"));
+      assertTrue(sql.contains("g.resource = 'acct'"));
+      assertTrue(sql.contains("g.resource_id IN (id::text, '*')"));
+      assertTrue(sql.contains("g.effect = 'allow'"));
+      assertTrue(sql.contains("AND NOT EXISTS")); // deny-wins
+      assertTrue(sql.contains("d.effect = 'deny'"));
+      assertTrue(sql.contains("FROM monolith_role_member")); // role indirection
+      assertTrue(sql.contains("current_setting('app.actor', true)"));
+    }
+
+    @Test
+    void accessControlComposesWithTenantAsRestrictive() throws IOException {
+      String sql = sqlFor(
+          "@AccessControlled @PgType public record Acct(java.util.UUID id, @Tenant String org) {}");
+      assertTrue(sql.contains("CREATE POLICY acct_access ON acct"));
+      assertTrue(sql.contains("acct_tenant_isolation ON acct AS RESTRICTIVE"),
+          "tenant ANDs with the grant check, not ORs");
+    }
+
+    @Test
+    void accessControlAcceptsACustomResourceAndIdColumn() throws IOException {
+      String sql = sqlFor(
+          "@AccessControlled(resource = \"account\", id = \"acctId\")"
+              + " @PgType public record Acct(java.util.UUID acctId) {}");
+      assertTrue(sql.contains("g.resource = 'account'"));
+      assertTrue(sql.contains("g.resource_id IN (acct_id::text, '*')"));
+    }
+
+    @Test
+    void accessControlWithAnUnknownIdColumnIsRejected() {
+      Outcome out = process("t.Acct",
+          "package t; " + IMPORTS + " @AccessControlled @PgType public record Acct(int n) {}");
+      assertFalse(out.cleanRun());
+      assertTrue(out.anyError("@AccessControlled id"));
+    }
   }
 
   @Test

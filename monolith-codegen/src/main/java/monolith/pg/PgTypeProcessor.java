@@ -179,7 +179,12 @@ public final class PgTypeProcessor extends AbstractProcessor {
     if (!projection) {
       // A projection is read-only: no table to create, nothing to write.
       emitBuilder(pkg, name, fields, fixedSize, bitmapBytes);
-      emitSql(pgName, fields, record.getAnnotation(Audited.class) != null);
+      AccessControlled access = record.getAnnotation(AccessControlled.class);
+      if (access != null && fields.stream().noneMatch(f -> snake(f.name()).equals(snake(access.id())))) {
+        throw new IllegalArgumentException(
+            "@AccessControlled id '" + access.id() + "' is not a component of " + name);
+      }
+      emitSql(pgName, fields, record.getAnnotation(Audited.class) != null, access);
     }
     if (querySql != null) {
       emitQuery(pkg, name, querySql);
@@ -780,7 +785,8 @@ public final class PgTypeProcessor extends AbstractProcessor {
 
   // ======================= SQL ===========================================
 
-  private void emitSql(String pgName, List<Field> fields, boolean audited) throws IOException {
+  private void emitSql(String pgName, List<Field> fields, boolean audited, AccessControlled access)
+      throws IOException {
     String dir = processingEnv.getOptions().get("monolith.sqlDir");
     if (dir == null) return;
     StringBuilder b = new StringBuilder();
@@ -797,11 +803,14 @@ public final class PgTypeProcessor extends AbstractProcessor {
     b.append("CREATE TABLE ").append(pgName).append(" (\n");
     appendColumns(b, fields, true);
     b.append(");\n");
-    for (Field f : fields) {
-      if (f.tenant()) {
-        appendTenantRls(b, pgName, f);
-        break; // one tenant column
-      }
+    Field tenant = fields.stream().filter(Field::tenant).findFirst().orElse(null);
+    if (access != null) {
+      // Access control owns the policies so it can compose tenant isolation as RESTRICTIVE (AND),
+      // since two PERMISSIVE policies would OR.
+      String resource = access.resource().isEmpty() ? pgName : access.resource();
+      appendAccessRls(b, pgName, resource, snake(access.id()), tenant);
+    } else if (tenant != null) {
+      appendTenantRls(b, pgName, tenant);
     }
     if (audited) {
       appendAudit(b, pgName);
@@ -820,6 +829,43 @@ public final class PgTypeProcessor extends AbstractProcessor {
     b.append("ALTER TABLE ").append(table).append(" FORCE ROW LEVEL SECURITY;\n");
     b.append("CREATE POLICY ").append(table).append("_tenant_isolation ON ").append(table)
         .append("\n  USING (").append(match).append(")\n  WITH CHECK (").append(match).append(");\n");
+  }
+
+  /**
+   * Forced row-level security keyed on the grant tables: a row is allowed when an {@code allow} grant
+   * matches the actor (or a role it holds) and no {@code deny} does. When a tenant column is present it
+   * is emitted as a RESTRICTIVE policy so it ANDs with the grant check (PERMISSIVE policies would OR).
+   * The grant and role tables come from {@code Grants.install}.
+   */
+  private static void appendAccessRls(StringBuilder b, String table, String resource, String idCol, Field tenant) {
+    String predicate = accessPredicate(resource, idCol);
+    b.append("\n-- Access control: forced row-level security keyed on grants for resource '")
+        .append(resource).append("'. Requires the tables from Grants.install.\n");
+    b.append("ALTER TABLE ").append(table).append(" ENABLE ROW LEVEL SECURITY;\n");
+    b.append("ALTER TABLE ").append(table).append(" FORCE ROW LEVEL SECURITY;\n");
+    b.append("CREATE POLICY ").append(table).append("_access ON ").append(table)
+        .append("\n  USING (").append(predicate).append(")\n  WITH CHECK (").append(predicate).append(");\n");
+    if (tenant != null) {
+      String match = snake(tenant.name()) + " = current_setting('app.tenant', true)::" + tenant.pgType();
+      b.append("-- Tenant isolation as RESTRICTIVE, so a row must both belong to the tenant and be granted.\n");
+      b.append("CREATE POLICY ").append(table).append("_tenant_isolation ON ").append(table)
+          .append(" AS RESTRICTIVE\n  USING (").append(match).append(")\n  WITH CHECK (").append(match).append(");\n");
+    }
+  }
+
+  /** The allow-and-not-deny predicate over the grant tables for {@code resource}, keyed on {@code idCol}. */
+  private static String accessPredicate(String resource, String idCol) {
+    String principals = "(SELECT current_setting('app.actor', true)\n"
+        + "        UNION ALL SELECT role FROM monolith_role_member"
+        + " WHERE actor = current_setting('app.actor', true))";
+    return "EXISTS (SELECT 1 FROM monolith_grant g\n"
+        + "      WHERE g.resource = '" + resource + "' AND g.resource_id IN (" + idCol + "::text, '*')"
+        + " AND g.effect = 'allow'\n"
+        + "        AND g.principal IN " + principals + ")\n"
+        + "    AND NOT EXISTS (SELECT 1 FROM monolith_grant d\n"
+        + "      WHERE d.resource = '" + resource + "' AND d.resource_id IN (" + idCol + "::text, '*')"
+        + " AND d.effect = 'deny'\n"
+        + "        AND d.principal IN " + principals + ")";
   }
 
   /** Append-only audit table + a write-capturing trigger + an immutability guard. */

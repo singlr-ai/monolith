@@ -96,8 +96,11 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
   the database only ever stores ciphertext. Key custody is a `KeyProvider` SPI (pure JDK), with a
   local provider that supports key rotation and a seam for a KMS adapter in its own module. `@Tenant`
   generates forced row-level security that confines every row to the current tenant (and blocks
-  cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. The app sets
-  the tenant and actor per transaction with `PgSession`. See [`docs/ENCRYPTION.md`](docs/ENCRYPTION.md).
+  cross-tenant writes), and `@Audited` generates an append-only, attributed audit trail. `@AccessControlled`
+  generates forced RLS keyed on a unified grant model (RBAC, ACLs, ownership, and deny-wins consent in
+  one mechanism, via the `Grants` API), composing with `@Tenant`. The app sets the actor and tenant per
+  transaction with `PgSession`. See [`docs/ENCRYPTION.md`](docs/ENCRYPTION.md) and
+  [`docs/design/ACCESS.md`](docs/design/ACCESS.md).
 - **Scale-out routing.** `PgReplicaSet` routes writes to the primary and reads round-robin across
   streaming replicas; `ShardRouter` routes each tenant to its own shard for shared-nothing scale.
   Both route over a common `ConnectionSource` (which `PgPool` implements). See
@@ -118,7 +121,7 @@ resolves up to the `region` it rolls into.
 
 | Module | What it is |
 |---|---|
-| `monolith-api` | Declaration annotations: `@PgType`, `@PgQuery`, `@PgProjection`, `@PgNull`, `@Encrypted`, `@Tenant`, `@Audited`, `Json`. |
+| `monolith-api` | Declaration annotations: `@PgType`, `@PgQuery`, `@PgProjection`, `@PgNull`, `@Encrypted`, `@Tenant`, `@Audited`, `@AccessControlled`, `Json`. |
 | `monolith-codegen` | The `javac` annotation processor. Generates DDL, readers/builders, TypeScript readers, and invalidation rules. |
 | `monolith-runtime` | libpq via Panama FFM, a connection pool, the binary tuple bridge and codecs, field encryption, and the WAL change-feed primitives. Pure JDK, no third-party dependencies. |
 | `monolith-reactive` | Live queries: `ReactiveHub` plus the WAL-tailing `Invalidator`. No web dependency. |
