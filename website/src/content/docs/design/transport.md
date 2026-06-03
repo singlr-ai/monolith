@@ -40,10 +40,12 @@ is faster." It is that **the FFM prepared path ties pgjdbc** (about 138 vs 133 m
 operation on a representative local run), so the native transport is competitive but not a raw-speed
 win. The performance case for FFM rests on the shared binary wire layout and zero-copy reads below, not
 on beating a mature JDBC driver on a microbenchmark. The benchmark also surfaced a real, transport-
-independent finding: the connection pool's `DISCARD ALL`-on-release reset means a server-prepared
-statement cannot survive a checkout, so the generated `execParamsBinary` path re-parses every call and
-runs about 3.5x slower than it needs to. The optimization worth chasing is prepared-plan reuse, not a
-change of transport.
+independent finding, and following it corrected a first guess: the pooled point select was slow because
+of the pool's reset round trips, not the parse. The pool rolled back and ran `DISCARD ALL` on every
+release; skipping the rollback when the connection is idle and keeping prepared statements and their
+plans across the reset cut the pooled point select about 1.75x. Prepared-plan reuse on top (the
+`PreparedCache`) removes the re-parse, which is server CPU on every call and around 11% on a query the
+planner has to think about. Neither lever is a change of transport.
 
 ## The decision: keep FFM
 

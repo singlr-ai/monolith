@@ -17,13 +17,22 @@ import java.util.concurrent.atomic.AtomicInteger;
  * A bounded pool of libpq {@code PGconn}s over FFM: exclusive single-thread lease, session
  * reset on release, and self-healing on a dead backend (proven under 128-way concurrent load).
  *
- * <p>Reset sends {@code ROLLBACK} and {@code DISCARD ALL} as two separate commands on
- * purpose, a multi-statement {@code PQexec} runs as one implicit transaction block and
- * {@code DISCARD ALL} refuses to run inside one.
+ * <p>Reset clears session state with the equivalent of {@code DISCARD ALL} <em>except</em>
+ * {@code DEALLOCATE ALL} and {@code DISCARD PLANS}: it keeps prepared statements <em>and their cached
+ * plans</em> so the {@link PreparedCache} reuses a plan across checkouts with no re-parse or re-plan (a
+ * prepared plan is the app's own query template, not tenant data, so it is safe to keep), while still
+ * discarding temp tables, settings, cursors, listens, and advisory locks. It rolls back first only when
+ * the connection is actually in a transaction (a client-side {@code PQtransactionStatus} check), so the
+ * common idle release is a single round trip.
  */
 public final class PgPool implements ConnectionSource {
 
   private static final Duration DEFAULT_LEASE_TIMEOUT = Duration.ofSeconds(10);
+
+  /** {@code DISCARD ALL} minus {@code DEALLOCATE ALL} and {@code DISCARD PLANS}: keep prepared plans. */
+  private static final String RESET_SESSION =
+      "CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT; RESET ALL; UNLISTEN *;"
+          + " SELECT pg_advisory_unlock_all(); DISCARD SEQUENCES; DISCARD TEMP";
 
   private final String conninfo;
   private final BlockingQueue<MemorySegment> idle;
@@ -78,11 +87,14 @@ public final class PgPool implements ConnectionSource {
   private MemorySegment reset(MemorySegment conn) {
     boolean healthy;
     try (Arena a = Arena.ofConfined()) {
-      Pg.exec(a, conn, "ROLLBACK");    // best-effort: end any open transaction
-      Pg.exec(a, conn, "DISCARD ALL"); // best-effort: clear session state (runs outside the tx)
+      if (Pg.transactionStatus(conn) != Pg.PQTRANS_IDLE) {
+        Pg.exec(a, conn, "ROLLBACK");    // end an open or failed transaction before clearing the session
+      }
+      Pg.exec(a, conn, RESET_SESSION);   // clear session state, keeping prepared statements and plans
       healthy = Pg.status(conn) == Pg.CONNECTION_OK;
     }
     if (healthy) return conn;
+    PreparedCache.forget(conn); // a reused address must not inherit the dead connection's plans
     Pg.finish(conn);
     replaced.incrementAndGet();
     return open();
@@ -99,6 +111,9 @@ public final class PgPool implements ConnectionSource {
   @Override
   public void close() {
     MemorySegment c;
-    while ((c = idle.poll()) != null) Pg.finish(c);
+    while ((c = idle.poll()) != null) {
+      PreparedCache.forget(c);
+      Pg.finish(c);
+    }
   }
 }

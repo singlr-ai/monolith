@@ -7,7 +7,6 @@ package monolith.pg.runtime;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A statement parsed and planned once on a connection, then run many times with different parameters
@@ -28,28 +27,28 @@ import java.util.concurrent.atomic.AtomicLong;
  * }</pre>
  *
  * <p>A prepared statement belongs to the connection it was created on, so a {@code Prepared} carries
- * that connection and runs there. The pool clears session state when a connection is returned (it
- * deallocates prepared statements), so a {@code Prepared} is valid for as long as you hold the
- * connection, not across leases. Parameters bind exactly as in {@link PgParam} (arrays and enums
- * included).
+ * that connection and runs there. It is a thin handle over the {@link PreparedCache}, so the plan is
+ * prepared once per connection and reused: across a {@link PgPool} checkout it survives (the pool's
+ * reset keeps prepared statements), and creating a {@code Prepared} for SQL already prepared on the
+ * connection reuses the same plan rather than allocating another. Parameters bind exactly as in
+ * {@link PgParam} (arrays and enums included).
  */
 public final class Prepared {
 
-  private static final AtomicLong COUNTER = new AtomicLong();
-
   private final MemorySegment conn;
+  private final String sql;
   private final String name;
 
-  private Prepared(MemorySegment conn, String name) {
+  private Prepared(MemorySegment conn, String sql, String name) {
     this.conn = conn;
+    this.sql = sql;
     this.name = name;
   }
 
   /** Prepares {@code sql} on {@code conn}, or a {@link Result.Failure} if it cannot be parsed/planned. */
   public static Result<Prepared> create(MemorySegment conn, String sql) {
-    var name = "monolith_p" + COUNTER.incrementAndGet();
     try (Arena arena = Arena.ofConfined()) {
-      return Pg.prepare(arena, conn, name, sql).map(ignored -> new Prepared(conn, name));
+      return PreparedCache.prepareOn(arena, conn, sql).map(name -> new Prepared(conn, sql, name));
     }
   }
 
@@ -61,7 +60,7 @@ public final class Prepared {
   public Result<MemorySegment> execute(Object... params) {
     try (Arena arena = Arena.ofConfined()) {
       var bound = PgParam.bind(arena, params);
-      return Pg.execPrepared(arena, conn, name, bound.values(), bound.lengths(), bound.formats());
+      return PreparedCache.execute(arena, conn, sql, bound);
     }
   }
 

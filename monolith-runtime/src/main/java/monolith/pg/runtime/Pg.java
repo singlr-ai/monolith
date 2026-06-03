@@ -73,6 +73,7 @@ public final class Pg {
 
   private static final MethodHandle PQconnectdb    = h("PQconnectdb",    FunctionDescriptor.of(PTR, PTR));
   private static final MethodHandle PQstatus       = h("PQstatus",       FunctionDescriptor.of(INT, PTR));
+  private static final MethodHandle PQtransactionStatus = h("PQtransactionStatus", FunctionDescriptor.of(INT, PTR));
   private static final MethodHandle PQerrorMessage = h("PQerrorMessage", FunctionDescriptor.of(PTR, PTR));
   private static final MethodHandle PQfinish       = h("PQfinish",       FunctionDescriptor.ofVoid(PTR));
   private static final MethodHandle PQexec         = h("PQexec",         FunctionDescriptor.of(PTR, PTR, PTR));
@@ -125,6 +126,9 @@ public final class Pg {
   public static final int PGRES_COMMAND_OK = 1;
   public static final int PGRES_TUPLES_OK = 2;
   public static final int PGRES_COPY_BOTH = 8;
+
+  /** {@code PQtransactionStatus}: the connection is idle with no transaction open. */
+  public static final int PQTRANS_IDLE = 0;
 
   /** Opens a connection. A failed handshake (bad conninfo, server down) is a {@link Result.Failure}. */
   public static Result<MemorySegment> connect(Arena arena, String conninfo) {
@@ -259,6 +263,12 @@ public final class Pg {
   /** Connection health (CONNECTION_OK == healthy). Used by the pool to detect a dead backend. */
   public static int status(MemorySegment conn) {
     try { return (int) PQstatus.invokeExact(conn); } catch (Throwable t) { throw new RuntimeException(t); }
+  }
+
+  /** Transaction status ({@link #PQTRANS_IDLE} == no open transaction). Read client-side, no round trip. */
+  public static int transactionStatus(MemorySegment conn) {
+    try { return (int) PQtransactionStatus.invokeExact(conn); }
+    catch (Throwable t) { throw new RuntimeException(t); }
   }
 
   /**

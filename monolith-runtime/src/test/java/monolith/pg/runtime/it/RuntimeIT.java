@@ -173,6 +173,27 @@ class RuntimeIT {
   }
 
   @Test
+  @DisplayName("releasing a connection mid-transaction rolls it back and recovers it")
+  void releaseRollsBackAnOpenTransaction() {
+    try (PgPool pool = new PgPool(CONNINFO, 1)) {
+      MemorySegment c = pool.lease().getOrThrow();
+      try (Arena a = Arena.ofConfined()) {
+        Pg.exec(a, c, "BEGIN").getOrThrow();
+        Pg.exec(a, c, "CREATE TEMP TABLE rb_check (x int)").getOrThrow();
+      }
+
+      pool.release(c); // not idle: the reset must roll back before clearing the session
+
+      MemorySegment again = pool.lease().getOrThrow(); // the same connection, recovered
+      try (Arena a = Arena.ofConfined()) {
+        assertEquals(Pg.PQTRANS_IDLE, Pg.transactionStatus(again), "the transaction should be rolled back");
+        Pg.exec(a, again, "SELECT 1").getOrThrow();
+      }
+      pool.release(again);
+    }
+  }
+
+  @Test
   @DisplayName("the pool replaces a connection whose backend died")
   void poolReplacesADeadBackend() {
     try (PgPool pool = new PgPool(CONNINFO, 1)) {

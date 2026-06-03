@@ -74,11 +74,14 @@ A hard regulatory requirement for a healthcare deployment, not a nice-to-have.
   reactive fan-out at N subscribers by M changes/sec, queue throughput, and the pool under connection
   storms, all run under a constrained JVM rather than on an unbounded dev box. (Done: the JDBC baseline.
   Finding below.)
-- [ ] **Prepared-plan reuse.** The JDBC baseline showed the FFM path ties pgjdbc when both reuse a
-  prepared plan (~138 vs ~133 us/op), but `PgPool` sends `DISCARD ALL` on release, so a server-prepared
-  statement cannot survive a checkout and the generated `execParamsBinary` path re-parses every call,
-  running about 3.5x slower than it needs to. A prepared-aware lease or a per-connection statement cache
-  closes the gap without changing transport. This is a performance win the benchmark made visible.
+- [x] **Prepared-plan reuse and a cheaper pool reset.** Done, and the benchmark corrected the premise on
+  the way. The pooled point select was slow because of the pool's reset round trips, not the parse:
+  skipping the `ROLLBACK` when the connection is idle (a client-side `PQtransactionStatus` check) and
+  keeping prepared statements and their plans across the reset (the equivalent of `DISCARD ALL` minus
+  `DEALLOCATE ALL` and `DISCARD PLANS`) cut it ~1.75x. On top of that the generated `@PgQuery` path runs
+  through a per-connection `PreparedCache` so a plan is parsed once and reused, which is server CPU on
+  every call and ~11% on a complex query. The remaining gap to pgjdbc is the one session-reset round trip
+  kept for isolation, which HikariCP forgoes by default.
 - [ ] **Async, non-pinning query dispatch.** The synchronous `execParamsBinary` path pins a virtual
   thread's carrier for the whole query round trip, because an FFM downcall cannot unmount. The async
   primitives already exist (`sendQueryParamsBinary` / `getResult` / `pollReadable`) for a reactor that

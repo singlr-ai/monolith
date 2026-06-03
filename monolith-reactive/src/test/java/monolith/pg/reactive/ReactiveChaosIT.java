@@ -24,6 +24,7 @@ import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.PgInvalidationRule;
 import monolith.pg.runtime.PgPool;
 import monolith.pg.runtime.Result;
+import monolith.pg.runtime.Wal;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -73,7 +74,10 @@ class ReactiveChaosIT {
 
   @AfterAll
   static void close() {
-    if (admin != null) Pg.finish(admin);
+    if (admin != null) {
+      Wal.drop(admin, SLOT); // the chaos abuses the slot; drop slot + publication so we leave no trace
+      Pg.finish(admin);
+    }
     ARENA.close();
   }
 
