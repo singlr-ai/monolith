@@ -12,23 +12,30 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.Predicate;
+import monolith.pg.runtime.Observability;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.PgInvalidationRule;
 import monolith.pg.runtime.PgPool;
 import monolith.pg.runtime.Result;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Fault injection for the change feed: drop the replication stream mid-flight by terminating its
- * walsender backend, and prove the feed recovers, an invalidation after the drop still reaches the
- * subscriber. Without reconnection the {@link Invalidator} would spin on a dead socket and silently
- * stop delivering, the missed-invalidation failure that shows stale data. Skips when no Postgres.
+ * Fault injection for the change feed: drop the replication stream mid-flight and prove the feed
+ * recovers, distinguishing the two recovery paths through the {@link ReactiveEvent}s the
+ * {@link Invalidator} emits. A clean drop (the slot survives) resumes from the slot's confirmed LSN and
+ * misses nothing ({@code gap == false}); a lost slot is recreated and every subscriber re-queries
+ * ({@code gap == true}). Without recovery the Invalidator would spin on a dead socket and silently stop,
+ * the missed-invalidation failure that shows stale data. Skips when no Postgres.
  */
 @DisplayName("change feed recovers from a dropped replication stream")
 class ReactiveFaultIT {
@@ -42,6 +49,8 @@ class ReactiveFaultIT {
   private static final Arena ARENA = Arena.ofShared();
   private static MemorySegment admin;
   private static boolean available;
+
+  private final List<ReactiveEvent> events = new CopyOnWriteArrayList<>();
 
   @BeforeAll
   static void setup() {
@@ -68,11 +77,20 @@ class ReactiveFaultIT {
   @BeforeEach
   void requirePostgres() {
     assumeTrue(available, "no Postgres reachable at " + CONNINFO);
+    events.clear();
+    Observability.use(event -> {
+      if (event instanceof ReactiveEvent reactive) events.add(reactive);
+    });
+  }
+
+  @AfterEach
+  void clearObserver() {
+    Observability.reset();
   }
 
   @Test
-  @DisplayName("a change after the walsender is killed still wakes the subscriber")
-  void recoversAfterTheStreamDrops() throws InterruptedException {
+  @DisplayName("a clean drop resumes from the slot without a gap")
+  void recoversFromACleanDrop() throws InterruptedException {
     PgPool pool = new PgPool(CONNINFO, 2);
     ReactiveHub hub = new ReactiveHub(pool, List.of(eventsRule()));
     var fires = new AtomicInteger();
@@ -80,24 +98,63 @@ class ReactiveFaultIT {
 
     Invalidator invalidator = new Invalidator(CONNINFO, hub, SLOT);
     try {
-      // Baseline: the feed delivers.
       insert();
       assertTrue(awaitAtLeast(fires, 1, 5000), "the feed should deliver before the fault");
       int before = fires.get();
 
-      // Fault: terminate the walsender holding our slot. The stream drops mid-flight.
-      killWalsender();
+      killWalsender(); // the slot survives, so the reconnect resumes by replay
 
-      // A change made after the drop must still arrive, once the Invalidator reconnects and the slot
-      // replays it. Generous timeout: the slot can stay briefly active after the kill, so the reconnect
-      // backs off and retries until the server frees it.
       insert();
       assertTrue(awaitAtLeast(fires, before + 1, 20000),
           "the feed should recover and deliver a change made after the stream dropped");
+      assertTrue(awaitEvent(reconnectedWithGap(false), 5000),
+          "a clean drop should reconnect without a gap");
     } finally {
       invalidator.close();
       pool.close();
     }
+  }
+
+  @Test
+  @DisplayName("a lost slot is recreated and every subscriber re-queries")
+  void recoversFromALostSlot() throws InterruptedException {
+    PgPool pool = new PgPool(CONNINFO, 2);
+    ReactiveHub hub = new ReactiveHub(pool, List.of(eventsRule()));
+    var fires = new AtomicInteger();
+    hub.subscribe("FaultEvents", "all", fires::incrementAndGet);
+
+    Invalidator invalidator = new Invalidator(CONNINFO, hub, SLOT);
+    var faulting = new AtomicBoolean(true);
+    // Relentlessly kill the walsender and drop the slot, so the Invalidator can never resume by replay
+    // and is forced down the lost-slot path (recreate + re-query) at least once. Deterministic: the slot
+    // is dropped every cycle, so some reconnect must find it missing.
+    Thread faultThread = Thread.ofPlatform().start(() -> {
+      while (faulting.get()) {
+        killWalsender();
+        dropSlotIfInactive();
+        sleepQuietly(20);
+      }
+    });
+    try {
+      assertTrue(awaitEvent(reconnectedWithGap(true), 30000),
+          "a lost slot should be detected and recovered with a full re-query");
+      faulting.set(false);
+      faultThread.join();
+
+      // Once the faults stop, the feed must work again: a fresh change reaches the subscriber.
+      int before = fires.get();
+      insert();
+      assertTrue(awaitAtLeast(fires, before + 1, 20000), "the feed should work again after a lost slot");
+    } finally {
+      faulting.set(false);
+      faultThread.join();
+      invalidator.close();
+      pool.close();
+    }
+  }
+
+  private Predicate<ReactiveEvent> reconnectedWithGap(boolean gap) {
+    return e -> e instanceof ReactiveEvent.StreamReconnected r && r.gap() == gap;
   }
 
   private static void insert() {
@@ -110,7 +167,28 @@ class ReactiveFaultIT {
     try (Arena a = Arena.ofConfined()) {
       Pg.exec(a, admin, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots"
           + " WHERE slot_name = '" + SLOT + "' AND active_pid IS NOT NULL");
+    } catch (RuntimeException ignore) {
+      // the slot may not exist this instant (just dropped); the next cycle retries
     }
+  }
+
+  private static void dropSlotIfInactive() {
+    try (Arena a = Arena.ofConfined()) {
+      Pg.exec(a, admin, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
+          + " WHERE slot_name = '" + SLOT + "' AND active_pid IS NULL");
+    } catch (RuntimeException ignore) {
+      // the slot may be active or already gone; the next cycle retries
+    }
+  }
+
+  private boolean awaitEvent(Predicate<ReactiveEvent> predicate, long timeoutMs)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+    while (System.nanoTime() < deadline) {
+      if (events.stream().anyMatch(predicate)) return true;
+      Thread.sleep(50);
+    }
+    return events.stream().anyMatch(predicate);
   }
 
   private static boolean awaitAtLeast(AtomicInteger counter, int target, long timeoutMs)
@@ -121,6 +199,14 @@ class ReactiveFaultIT {
       Thread.sleep(50);
     }
     return counter.get() >= target;
+  }
+
+  private static void sleepQuietly(long ms) {
+    try {
+      Thread.sleep(ms);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /** Any change on {@code fault_events} maps to the single param "all". */

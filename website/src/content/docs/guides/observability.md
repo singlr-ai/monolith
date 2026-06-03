@@ -35,8 +35,21 @@ The events today:
 | `ConnectionLeased(waitNanos)` | the pool handed out a connection after waiting `waitNanos` |
 | `PoolExhausted(waited)` | a lease gave up after `waited` with no connection free |
 
-Because the events are a sealed set, an adapter handles them with an exhaustive `switch` and gets a
-compile error when a new one is added.
+The reactive layer emits its own events through the same seam (as `MonolithEvent.Extension`, so the core
+stays dependency-free):
+
+| Event | When |
+|---|---|
+| `SlotHealthChecked(slot, retainedBytes, walStatus, active)` | the `SlotMonitor` polled a slot's health |
+| `SlotLost(slot)` | a slot was found lost; the feed has a gap and subscribers must re-query |
+| `StreamDropped(slot, error)` | the replication stream dropped; the `Invalidator` is reconnecting |
+| `StreamReconnected(slot, gap)` | the stream reconnected (`gap` true when the slot was lost and everyone re-queried) |
+
+A rising `StreamReconnected` rate means the feed is flapping; a `gap == true` reconnect or a `SlotLost`
+is the one that dropped changes and re-queried, the signal worth alerting on.
+
+Because the core events are a sealed set, an adapter handles them with an exhaustive `switch` and gets a
+compile error when a new one is added; the `Extension` events (above) are matched with a pattern label.
 
 ## Installing one
 

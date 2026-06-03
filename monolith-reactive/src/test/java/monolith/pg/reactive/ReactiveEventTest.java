@@ -6,6 +6,7 @@
 package monolith.pg.reactive;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
@@ -28,5 +29,21 @@ class ReactiveEventTest {
   @DisplayName("a lost-slot event carries the slot")
   void slotLostCarriesTheSlot() {
     assertEquals("app_feed", new ReactiveEvent.SlotLost("app_feed").slot());
+  }
+
+  @Test
+  @DisplayName("a stream-dropped event carries the slot and the error")
+  void streamDroppedExposesFields() {
+    var event = new ReactiveEvent.StreamDropped("app_feed", "copy stream ended");
+    assertEquals("app_feed", event.slot());
+    assertEquals("copy stream ended", event.error());
+  }
+
+  @Test
+  @DisplayName("a stream-reconnected event distinguishes a gap from a clean resume")
+  void streamReconnectedExposesGap() {
+    assertTrue(new ReactiveEvent.StreamReconnected("app_feed", true).gap());
+    assertFalse(new ReactiveEvent.StreamReconnected("app_feed", false).gap());
+    assertEquals("app_feed", new ReactiveEvent.StreamReconnected("app_feed", false).slot());
   }
 }

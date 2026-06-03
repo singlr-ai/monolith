@@ -7,6 +7,7 @@ package monolith.pg.reactive;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import monolith.pg.runtime.Observability;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.SlotHealth;
 import monolith.pg.runtime.Wal;
@@ -49,7 +50,7 @@ public final class Invalidator implements AutoCloseable {
         stream.confirm();              // advance the slot (release WAL)
       } catch (RuntimeException e) {
         if (running) {
-          System.err.println("[monolith reactive] stream error, reconnecting: " + e.getMessage());
+          Observability.emit(new ReactiveEvent.StreamDropped(slot, e.getMessage()));
           reconnect();
         }
       }
@@ -73,6 +74,7 @@ public final class Invalidator implements AutoCloseable {
         boolean gap = ensureSlot();
         stream = new WalStream(conninfo, slot);
         if (gap) hub.invalidateAll();
+        Observability.emit(new ReactiveEvent.StreamReconnected(slot, gap));
         return;
       } catch (RuntimeException retry) {
         backoffMs = Math.min(backoffMs * 2, 2000);

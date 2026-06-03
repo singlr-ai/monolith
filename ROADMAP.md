@@ -43,12 +43,14 @@ suite, which runs against a single healthy Postgres.
   entry points.
 - [~] **3. Reactive correctness under failure.** A missed invalidation shows stale data (in healthcare,
   potentially the wrong record). The at-least-once and snapshot semantics must hold under fault
-  injection: slot restart, LSN gaps, connection drops mid-stream, replica failover. In progress:
-  connection drops mid-stream are handled, the `Invalidator` now reconnects (it used to spin on the dead
-  socket and silently stop), resuming from the slot's confirmed LSN and re-querying everyone only when
-  the slot was genuinely lost; `ReactiveFaultIT` kills the walsender mid-stream and proves a later change
-  still reaches the subscriber. Remaining: LSN gaps, replica failover, and property-based testing rather
-  than single-scenario integration tests.
+  injection. Done: connection drops mid-stream and the LSN-gap (lost-slot) case. The `Invalidator`
+  reconnects (it used to spin on the dead socket and silently stop), resuming from the slot's confirmed
+  LSN and re-querying everyone only when the slot was genuinely lost, and it emits `StreamDropped` /
+  `StreamReconnected` so flapping is observable. `ReactiveFaultIT` proves both paths deterministically (a
+  clean drop reconnects with `gap == false`; a forced lost slot recovers with `gap == true`), and
+  `ReactiveChaosIT` drives a randomized, fixed-seed storm of writes, kills, and slot drops and asserts
+  the invariant that the feed always recovers. Remaining: true multi-node replica failover, which needs a
+  primary plus replica harness, not a single Postgres.
 
 ## Next: close the compliance gate (HIPAA)
 
