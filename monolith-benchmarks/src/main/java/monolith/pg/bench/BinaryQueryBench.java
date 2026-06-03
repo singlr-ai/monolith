@@ -28,10 +28,14 @@ import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
 /**
- * End-to-end benchmark of the FFM binary path: a point select that binds a binary int parameter, runs
- * it through libpq, and reads the binary result, leased from and returned to the pool, at concurrency.
- * This is the number the transport decision claims to win, measured rather than asserted. Requires a
- * reachable Postgres ({@code MONOLITH_TEST_CONNINFO}); the pool is shared across benchmark threads.
+ * End-to-end benchmark of the idiomatic FFM path: a point select that binds a binary int parameter,
+ * runs it through libpq with {@code execParamsBinary}, and reads the binary result, leased from and
+ * returned to the pool, at concurrency. This is monolith's generated point-select path as it actually
+ * runs: {@code execParamsBinary} re-parses the SQL each call, because {@link PgPool} sends
+ * {@code DISCARD ALL} on release, so a server-prepared statement cannot survive a checkout. The
+ * {@link PreparedQueryBench} measures the prepared ceiling on a connection the pool never resets, and
+ * {@link JdbcQueryBench} is the pgjdbc baseline. Requires a reachable Postgres
+ * ({@code MONOLITH_TEST_CONNINFO}); the pool is shared across benchmark threads.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode({Mode.Throughput, Mode.AverageTime})
@@ -42,7 +46,8 @@ import org.openjdk.jmh.annotations.Warmup;
 @Threads(8)
 public class BinaryQueryBench {
 
-  private static final int ROWS = 1000;
+  static final int ROWS = 1000;
+  static final String SELECT = "SELECT name, val FROM bench_rows WHERE id = $1";
 
   private PgPool pool;
 
@@ -68,8 +73,7 @@ public class BinaryQueryBench {
     MemorySegment conn = pool.lease().getOrThrow();
     try (var arena = Arena.ofConfined()) {
       var p = PgParam.bind(arena, id);
-      MemorySegment res = Pg.execParamsBinary(arena, conn,
-          "SELECT name, val FROM bench_rows WHERE id = $1", p.values(), p.lengths(), p.formats())
+      MemorySegment res = Pg.execParamsBinary(arena, conn, SELECT, p.values(), p.lengths(), p.formats())
           .getOrThrow();
       try {
         return ByteBuffer.wrap(Pg.getbytes(res, 0, 1)).getLong();

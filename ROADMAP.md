@@ -61,8 +61,14 @@ A hard regulatory requirement for a healthcare deployment, not a nice-to-have.
 - [ ] **Runbooks** for the operational risks (slot stall, pool exhaustion, failover, queue backlog).
 - [~] **Benchmark suite** that proves the claims. Started: a JMH module (`monolith-benchmarks`, behind the
   `benchmarks` profile) measures the FFM binary path's throughput/latency and parameter encoding. Remaining:
-  a JDBC baseline to compare against, reactive fan-out at N subscribers by M changes/sec, queue throughput,
-  and the pool under connection storms, all run under a constrained JVM rather than on an unbounded dev box.
+  reactive fan-out at N subscribers by M changes/sec, queue throughput, and the pool under connection
+  storms, all run under a constrained JVM rather than on an unbounded dev box. (Done: the JDBC baseline.
+  Finding below.)
+- [ ] **Prepared-plan reuse.** The JDBC baseline showed the FFM path ties pgjdbc when both reuse a
+  prepared plan (~138 vs ~133 us/op), but `PgPool` sends `DISCARD ALL` on release, so a server-prepared
+  statement cannot survive a checkout and the generated `execParamsBinary` path re-parses every call,
+  running about 3.5x slower than it needs to. A prepared-aware lease or a per-connection statement cache
+  closes the gap without changing transport. This is a performance win the benchmark made visible.
 - [ ] **API stability and a road to 1.0.** A semver discipline and a deprecation policy. "The API will
   change" is disqualifying for production; a public 1.0 plan is what lets a company commit.
 

@@ -26,13 +26,24 @@ separately). `PgParam`'s binary encoding would become `PreparedStatement.setXxx`
 | | FFM / libpq (current) | JDBC / pgjdbc |
 |---|---|---|
 | Identity | binary wire layout shared with the TypeScript client; zero-copy reads | a `ResultSet` abstraction; serialize separately for clients |
-| Performance | the binary path, no per-row object churn | the driver's parsing and allocation |
+| Performance | competitive with a tuned driver when plans are reused; no per-row object churn | a mature driver with prepared-statement caching |
 | Dependencies | pure JDK, no third-party runtime | a mature, ubiquitous driver dependency |
 | Safety | `Arena` / `MemorySegment` lifecycle bugs crash the JVM (SIGSEGV), not throw | memory-safe; no native crashes |
 | Familiarity | bleeding-edge; fewer engineers know FFM; harder to debug | every Java shop knows it |
 
 The sharpest point: **JDBC would eliminate the native-memory-safety risk entirely.** That is a genuine
 argument, and it is why this decision deserves to be written down rather than assumed.
+
+**What the benchmark actually says.** We measured a point select three ways (see `monolith-benchmarks`):
+the idiomatic FFM path, the FFM prepared path, and pgjdbc with HikariCP. The honest result is not "FFM
+is faster." It is that **the FFM prepared path ties pgjdbc** (about 138 vs 133 microseconds per
+operation on a representative local run), so the native transport is competitive but not a raw-speed
+win. The performance case for FFM rests on the shared binary wire layout and zero-copy reads below, not
+on beating a mature JDBC driver on a microbenchmark. The benchmark also surfaced a real, transport-
+independent finding: the connection pool's `DISCARD ALL`-on-release reset means a server-prepared
+statement cannot survive a checkout, so the generated `execParamsBinary` path re-parses every call and
+runs about 3.5x slower than it needs to. The optimization worth chasing is prepared-plan reuse, not a
+change of transport.
 
 ## The decision: keep FFM
 
