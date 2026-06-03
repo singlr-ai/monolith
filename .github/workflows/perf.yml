@@ -1,0 +1,103 @@
+name: Performance and soak
+
+# Profiling, microbenchmarking, and long stress/soak runs, kept out of the per-push CI so they can run
+# for a long time without gating merges. Trigger it manually (Actions tab) with a chosen soak duration,
+# or let the nightly schedule run a bounded version. Results (JMH JSON, soak log, native-memory summary)
+# are uploaded as an artifact.
+#
+# GitHub-hosted runners cap a job at 6 hours. For multi-hour or overnight soaks, run this on a
+# self-hosted runner or raise the duration toward the timeout below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stress_seconds:
+        description: 'FfmStressIT soak duration in seconds (the FFM binary path under load)'
+        default: '1800'
+      jmh_args:
+        description: 'Extra JMH args, e.g. "-f 3" for more forks or "-prof gc" to profile allocation'
+        default: '-f 2'
+  schedule:
+    # Nightly at 07:00 UTC, a bounded run (uses the fallback duration and a single fork).
+    - cron: '0 7 * * *'
+
+# One long perf run at a time; never cancel an in-flight soak.
+concurrency:
+  group: perf
+  cancel-in-progress: false
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      # Logical decoding for the reactive layer; trust auth keeps it password-free.
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=monolith_test \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 5432:5432 postgres:18 -c wal_level=logical
+          for _ in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres && exit 0
+            sleep 1
+          done
+          echo "Postgres did not become ready" >&2; exit 1
+
+      # libpq is the client library the FFM runtime binds at run time.
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y libpq5
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: temurin
+          cache: maven
+
+      - name: Build benchmark runner
+        run: mvn -B -Pbenchmarks -pl monolith-benchmarks -am package -DskipTests
+
+      - name: Microbenchmarks (JMH)
+        run: >
+          java --enable-native-access=ALL-UNNAMED
+          -jar monolith-benchmarks/target/benchmarks.jar
+          ${{ github.event.inputs.jmh_args || '-f 1' }}
+          -rf json -rff jmh-result.json -foe true | tee jmh.log
+
+      # Install the reactor so the soak can run the runtime module in isolation.
+      - name: Build reactor for the soak
+        run: mvn -B -DskipTests install
+
+      # Stress the FFM binary path under a deliberately small heap with native-memory tracking on, so a
+      # leak or allocation-pressure bug surfaces under constraint instead of behind a runner's RAM.
+      - name: Stress and soak under a constrained JVM
+        env:
+          MONOLITH_STRESS_SECONDS: ${{ github.event.inputs.stress_seconds || '600' }}
+        run: >
+          mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime
+          test -Dtest=FfmStressIT | tee soak.log
+
+      # Run the binary path under NMT and print the native-memory summary at exit, so growth in
+      # committed native memory (an Arena that is not being freed) is visible in the artifact.
+      - name: Native-memory leak summary
+        run: >
+          java --enable-native-access=ALL-UNNAMED
+          -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics
+          -jar monolith-benchmarks/target/benchmarks.jar BinaryQueryBench
+          -f 1 -wi 2 -i 10 -r 5 2>&1 | tee nmt.log
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: |
+            jmh-result.json
+            jmh.log
+            soak.log
+            nmt.log
+          if-no-files-found: warn
