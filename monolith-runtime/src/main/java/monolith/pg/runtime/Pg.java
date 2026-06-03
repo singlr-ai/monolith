@@ -119,6 +119,7 @@ public final class Pg {
       FunctionDescriptor.of(INT, PTR, INT, INT)); // int poll(struct pollfd*, nfds_t(uint), int timeout)
 
   private static final short POLLIN = 0x0001;
+  private static final short POLLOUT = 0x0004;
 
   public static final int CONNECTION_OK = 0;
   public static final int PGRES_COMMAND_OK = 1;
@@ -441,7 +442,13 @@ public final class Pg {
     } catch (Throwable t) { throw new RuntimeException(t); }
   }
 
-  /** Send a CopyData message upstream (e.g. a standby status reply) and flush it. */
+  /**
+   * Send a CopyData message upstream (e.g. a standby status reply) and flush it fully. The flush is not
+   * fire-and-forget: a standby reply carries the confirmed LSN that advances the replication slot, so a
+   * dropped flush would stall slot advancement and let WAL accumulate. When the socket's send buffer is
+   * full (PQflush returns 1), wait for write-readiness and flush again until it is sent (0) or the
+   * connection errors.
+   */
   public static void sendCopyData(Arena arena, MemorySegment conn, byte[] msg) {
     try {
       MemorySegment data = arena.allocate(msg.length);
@@ -449,7 +456,17 @@ public final class Pg {
       if ((int) PQputCopyData.invokeExact(conn, data, msg.length) < 0) {
         throw new RuntimeException("PQputCopyData failed");
       }
-      int ignore = (int) PQflush.invokeExact(conn);
+      int rc;
+      while ((rc = (int) PQflush.invokeExact(conn)) == 1) { // 1 = send buffer full, data still queued
+        int fd = (int) PQsocket.invokeExact(conn);
+        if (fd < 0) throw new RuntimeException("flush failed: connection has no socket");
+        MemorySegment pollfd = arena.allocate(8); // struct pollfd { int fd; short events; short revents; }
+        pollfd.set(ValueLayout.JAVA_INT, 0, fd);
+        pollfd.set(ValueLayout.JAVA_SHORT, 4, POLLOUT);
+        pollfd.set(ValueLayout.JAVA_SHORT, 6, (short) 0);
+        int ignore = (int) POLL.invokeExact(pollfd, 1, 1000); // wait for writability (or an error in revents)
+      }
+      if (rc < 0) throw new RuntimeException("PQflush failed");
     } catch (Throwable t) { throw new RuntimeException(t); }
   }
 

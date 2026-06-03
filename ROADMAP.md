@@ -34,9 +34,13 @@ suite, which runs against a single healthy Postgres.
   [transport decision](/design/transport/)) and earn its safety by testing it. In progress: `FfmStressIT`
   hammers the binary path under concurrency with verified reads (soak via `MONOLITH_STRESS_SECONDS`), and
   the `soak` Maven profile runs it under a constrained JVM (`-Xmx256m`, native-memory tracking) so a leak
-  surfaces here instead of hiding behind a dev box's abundant RAM. Remaining: a longer soak in CI,
-  native-memory leak watching over those runs, an Arena-boundary audit, and fault injection (kill the
-  server mid-stream).
+  surfaces here instead of hiding behind a dev box's abundant RAM. The `perf` workflow runs the JMH
+  benchmarks, the constrained soak, and a native-memory summary on demand and nightly. The Arena-boundary
+  audit is done (see [FFM safety](/design/ffm-safety/)): the result-clear and single-thread discipline
+  held, and it hardened the standby-reply flush so backpressure cannot silently stall slot advancement.
+  Remaining: wire a longer soak into CI, native-memory leak watching over those runs, fault injection
+  (kill the server mid-stream, induce send-buffer backpressure), and a decision on the unused async query
+  entry points.
 - [ ] **3. Reactive correctness under failure.** A missed invalidation shows stale data (in healthcare,
   potentially the wrong record). The at-least-once and snapshot semantics must hold under fault
   injection: slot restart, LSN gaps, connection drops mid-stream, replica failover. Needs property-based
