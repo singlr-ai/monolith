@@ -45,9 +45,11 @@ waits for write-readiness and flushes again until the reply is sent or the conne
 ## Open item
 
 The async query protocol entry points (`sendQueryParamsBinary`, `getResult`, `isBusy`) are defined but
-unused. As written they are untested native surface; they are scaffolding for a future async reactor
-path. The decision is to either wire them up behind a tested path or remove them until that path lands,
-rather than leave unexercised downcalls in the binding.
+unused. They are scaffolding for a future async reactor that dispatches without blocking so a submitting
+virtual thread can unmount instead of pinning its carrier for the query round trip (see
+[Async, non-pinning query dispatch](/roadmap) on the roadmap). The decision is to keep them and wire the
+generated query path onto them behind a tested reactor, treating them as untrusted native surface until
+that work, with its own fault injection and soak, lands.
 
 ## What remains
 

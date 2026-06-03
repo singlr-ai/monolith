@@ -73,6 +73,14 @@ A hard regulatory requirement for a healthcare deployment, not a nice-to-have.
   statement cannot survive a checkout and the generated `execParamsBinary` path re-parses every call,
   running about 3.5x slower than it needs to. A prepared-aware lease or a per-connection statement cache
   closes the gap without changing transport. This is a performance win the benchmark made visible.
+- [ ] **Async, non-pinning query dispatch.** The synchronous `execParamsBinary` path pins a virtual
+  thread's carrier for the whole query round trip, because an FFM downcall cannot unmount. The async
+  primitives already exist (`sendQueryParamsBinary` / `getResult` / `pollReadable`) for a reactor that
+  dispatches without blocking, parks the submitting virtual thread, and multiplexes every in-flight query
+  on one poll loop, so N concurrent queries cost one reactor thread plus N unmounted virtual threads,
+  not N pinned carriers. The scaffolding is in place but unwired and untested; wire the generated query
+  path onto it behind a tested reactor, with the same fault injection and soak the synchronous path gets,
+  or it stays latent. This is the scalability story a JDBC transport could not tell.
 - [ ] **API stability and a road to 1.0.** A semver discipline and a deprecation policy. "The API will
   change" is disqualifying for production; a public 1.0 plan is what lets a company commit.
 

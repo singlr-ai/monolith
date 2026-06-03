@@ -341,6 +341,11 @@ public final class Pg {
   }
 
   // ===================== Async query protocol =================
+  // Scaffolding for a non-pinning reactor: dispatch a query without blocking so the submitting
+  // virtual thread can unmount (an FFM downcall otherwise pins its carrier for the whole round trip),
+  // then a single reactor thread multiplexes every in-flight query via pollReadable. Not yet wired
+  // into the generated query path; see ROADMAP "Async, non-pinning query dispatch". Until then these
+  // entry points are untrusted native surface (no integration test exercises them).
 
   /**
    * Dispatch a binary-param query requesting a binary result, <b>without</b> waiting
