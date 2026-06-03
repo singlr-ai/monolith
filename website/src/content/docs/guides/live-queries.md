@@ -114,3 +114,11 @@ feed has a gap: the slot outran its retention budget and changes were dropped. R
 (`Wal.recreate`) and call `ReactiveHub.invalidateAll()`, which wakes **every** subscriber so each
 re-queries fresh. A re-snapshot on recovery is correct because each query re-executes from scratch;
 treat a lost slot as "resubscribe everyone," not "resume where we left off".
+
+Dropped streams recover on their own. A replication connection can drop without the slot being lost (a
+network reset, a failover, a terminated walsender). The `Invalidator` handles this itself: it reconnects
+with backoff and resumes from the slot's confirmed LSN, so changes made during the gap replay and reach
+their subscribers. It re-queries everyone (the lost-slot path above) only when the slot was actually
+lost. You do not need to restart anything; a transient drop is self-healing, and the only drop that
+needs operator attention is the lost-slot case, which `max_slot_wal_keep_size` and the `SlotMonitor`
+already cover.

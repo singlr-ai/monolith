@@ -41,10 +41,14 @@ suite, which runs against a single healthy Postgres.
   Remaining: wire a longer soak into CI, native-memory leak watching over those runs, fault injection
   (kill the server mid-stream, induce send-buffer backpressure), and a decision on the unused async query
   entry points.
-- [ ] **3. Reactive correctness under failure.** A missed invalidation shows stale data (in healthcare,
+- [~] **3. Reactive correctness under failure.** A missed invalidation shows stale data (in healthcare,
   potentially the wrong record). The at-least-once and snapshot semantics must hold under fault
-  injection: slot restart, LSN gaps, connection drops mid-stream, replica failover. Needs property-based
-  and chaos testing, not only happy-path integration tests.
+  injection: slot restart, LSN gaps, connection drops mid-stream, replica failover. In progress:
+  connection drops mid-stream are handled, the `Invalidator` now reconnects (it used to spin on the dead
+  socket and silently stop), resuming from the slot's confirmed LSN and re-querying everyone only when
+  the slot was genuinely lost; `ReactiveFaultIT` kills the walsender mid-stream and proves a later change
+  still reaches the subscriber. Remaining: LSN gaps, replica failover, and property-based testing rather
+  than single-scenario integration tests.
 
 ## Next: close the compliance gate (HIPAA)
 

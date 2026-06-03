@@ -8,6 +8,7 @@ package monolith.pg.reactive;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import monolith.pg.runtime.Pg;
+import monolith.pg.runtime.SlotHealth;
 import monolith.pg.runtime.Wal;
 import monolith.pg.runtime.WalStream;
 
@@ -24,7 +25,7 @@ public final class Invalidator implements AutoCloseable {
   private final String conninfo;
   private final String slot;
   private final ReactiveHub hub;
-  private final WalStream stream;
+  private volatile WalStream stream; // replaced on reconnect; only the loop thread reassigns it
   private final Thread thread;
   private volatile boolean running = true;
 
@@ -47,8 +48,71 @@ public final class Invalidator implements AutoCloseable {
         stream.poll(200, hub::apply); // event-driven; blocks on the replication socket
         stream.confirm();              // advance the slot (release WAL)
       } catch (RuntimeException e) {
-        if (running) System.err.println("[monolith reactive] " + e.getMessage());
+        if (running) {
+          System.err.println("[monolith reactive] stream error, reconnecting: " + e.getMessage());
+          reconnect();
+        }
       }
+    }
+  }
+
+  /**
+   * Rebuild the dropped stream so a connection loss (network reset, failover, a terminated walsender)
+   * does not silently stop the feed. Retries with backoff until it reconnects or the Invalidator is
+   * closing. The slot is server-side state that survives a client drop, so the new stream resumes from
+   * the slot's confirmed LSN and replays any changes made during the gap. Only when the slot itself was
+   * lost (it outran its retention budget, so changes were dropped) does recovery re-query every
+   * subscriber, the same semantics as {@code SlotMonitor}'s lost-slot recovery.
+   */
+  private void reconnect() {
+    closeStreamQuietly();
+    long backoffMs = 100;
+    while (running) {
+      if (!sleep(backoffMs)) return; // interrupted by close()
+      try {
+        boolean gap = ensureSlot();
+        stream = new WalStream(conninfo, slot);
+        if (gap) hub.invalidateAll();
+        return;
+      } catch (RuntimeException retry) {
+        backoffMs = Math.min(backoffMs * 2, 2000);
+      }
+    }
+  }
+
+  /** Ensure the slot is usable, recreating it if it was lost or has vanished. True if it was recreated. */
+  private boolean ensureSlot() {
+    try (Arena a = Arena.ofConfined()) {
+      MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
+      try {
+        SlotHealth health = Wal.health(admin, slot);
+        if (!health.exists() || health.isLost()) {
+          Wal.recreate(admin, slot);
+          return true;
+        }
+        return false;
+      } finally {
+        Pg.finish(admin);
+      }
+    }
+  }
+
+  private void closeStreamQuietly() {
+    try {
+      stream.close();
+    } catch (RuntimeException ignore) {
+      // the connection is already dead; nothing more to release
+    }
+  }
+
+  /** Sleep for the backoff; return false if interrupted (the Invalidator is closing). */
+  private boolean sleep(long ms) {
+    try {
+      Thread.sleep(ms);
+      return running;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
     }
   }
 
