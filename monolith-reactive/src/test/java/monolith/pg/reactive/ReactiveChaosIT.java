@@ -31,6 +31,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A property-style chaos test for the change feed: rather than one scripted fault, drive a randomized
@@ -96,6 +98,7 @@ class ReactiveChaosIT {
   }
 
   @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS) // a hang fails fast instead of stalling CI (default run is ~30s)
   @DisplayName("after any storm of writes, kills, and slot drops, a later change still arrives")
   void theFeedAlwaysRecovers() throws InterruptedException {
     PgPool pool = new PgPool(CONNINFO, 4);
@@ -103,11 +106,16 @@ class ReactiveChaosIT {
     var fires = new AtomicInteger();
     hub.subscribe("ChaosEvents", "all", fires::incrementAndGet);
 
+    // Each concurrent thread gets its own connection: a libpq connection is single-threaded, so the
+    // writer and the fault injector must not share one (nor the admin connection the main thread uses).
+    MemorySegment writerConn = Pg.connect(ARENA, CONNINFO).getOrThrow();
+    MemorySegment faultConn = Pg.connect(ARENA, CONNINFO).getOrThrow();
+
     Invalidator invalidator = new Invalidator(CONNINFO, hub, SLOT);
     var running = new AtomicBoolean(true);
     Thread writer = Thread.ofPlatform().start(() -> {
       while (running.get()) {
-        insert();
+        insert(writerConn);
         sleepQuietly(ThreadLocalRandom.current().nextInt(10, 60));
       }
     });
@@ -116,8 +124,8 @@ class ReactiveChaosIT {
       var random = new Random(20260603L);
       while (running.get()) {
         sleepQuietly(random.nextInt(30, 150));
-        killWalsender();
-        if (random.nextInt(3) == 0) dropSlotIfInactive(); // sometimes force the lost-slot path
+        killWalsender(faultConn);
+        if (random.nextInt(3) == 0) dropSlotIfInactive(faultConn); // sometimes force the lost-slot path
       }
     });
 
@@ -129,7 +137,7 @@ class ReactiveChaosIT {
 
       // The invariant: once the storm stops, the feed works. A fresh change must reach the subscriber.
       int before = fires.get();
-      insert();
+      insert(admin); // the main thread now, with the worker threads joined: no shared-connection use
       assertTrue(awaitAtLeast(fires, before + 1, 20000),
           "the feed must recover after the storm and deliver a later change");
       var reconnects = events.stream().filter(e -> e instanceof ReactiveEvent.StreamReconnected).count();
@@ -140,29 +148,31 @@ class ReactiveChaosIT {
       faults.join();
       invalidator.close();
       pool.close();
+      Pg.finish(writerConn);
+      Pg.finish(faultConn);
     }
   }
 
-  private static void insert() {
+  private static void insert(MemorySegment conn) {
     try (Arena a = Arena.ofConfined()) {
-      Pg.exec(a, admin, "INSERT INTO chaos_events (kind) VALUES ('created')").getOrThrow();
+      Pg.exec(a, conn, "INSERT INTO chaos_events (kind) VALUES ('created')").getOrThrow();
     } catch (RuntimeException ignore) {
-      // a write can fail if its backend was a kill victim; the writer loops and tries again
+      // a write can fail amid the slot churn; the writer loops and tries again
     }
   }
 
-  private static void killWalsender() {
+  private static void killWalsender(MemorySegment conn) {
     try (Arena a = Arena.ofConfined()) {
-      Pg.exec(a, admin, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots"
+      Pg.exec(a, conn, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots"
           + " WHERE slot_name = '" + SLOT + "' AND active_pid IS NOT NULL");
     } catch (RuntimeException ignore) {
       // the slot may be momentarily gone; the next cycle retries
     }
   }
 
-  private static void dropSlotIfInactive() {
+  private static void dropSlotIfInactive(MemorySegment conn) {
     try (Arena a = Arena.ofConfined()) {
-      Pg.exec(a, admin, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
+      Pg.exec(a, conn, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
           + " WHERE slot_name = '" + SLOT + "' AND active_pid IS NULL");
     } catch (RuntimeException ignore) {
       // active or already gone; the next cycle retries

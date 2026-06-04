@@ -29,6 +29,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Fault injection for the change feed: drop the replication stream mid-flight and prove the feed
@@ -93,6 +95,7 @@ class ReactiveFaultIT {
   }
 
   @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   @DisplayName("a clean drop resumes from the slot without a gap")
   void recoversFromACleanDrop() throws InterruptedException {
     PgPool pool = new PgPool(CONNINFO, 2);
@@ -120,6 +123,7 @@ class ReactiveFaultIT {
   }
 
   @Test
+  @Timeout(value = 90, unit = TimeUnit.SECONDS) // 30s gap-await + recovery, plus margin
   @DisplayName("a lost slot is recreated and every subscriber re-queries")
   void recoversFromALostSlot() throws InterruptedException {
     PgPool pool = new PgPool(CONNINFO, 2);
