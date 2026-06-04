@@ -419,6 +419,18 @@ class PgTypeProcessorTest {
     }
 
     @Test
+    void accessControlEscapesSingleQuotesInTheResourceLiteral() throws IOException {
+      // A resource with an apostrophe must be escaped as a doubled quote, not break out of the SQL
+      // string literal and generate broken or unintended policy text.
+      String sql = sqlFor("@AccessControlled(resource = \"o'brien\")"
+          + " @PgType public record Acct(java.util.UUID id) {}");
+      assertTrue(sql.contains("g.resource = 'o''brien'"),
+          () -> "resource literal must be SQL-escaped (doubled quote); got:\n" + sql);
+      assertFalse(sql.contains("'o'brien'"),
+          "must not emit an unescaped apostrophe that terminates the string literal");
+    }
+
+    @Test
     void accessControlWithAnUnknownIdColumnIsRejected() {
       Outcome out = process("t.Acct",
           "package t; " + IMPORTS + " @AccessControlled @PgType public record Acct(int n) {}");
@@ -515,6 +527,18 @@ class PgTypeProcessorTest {
     }
 
     @Test
+    void aSelfJoinIsRejectedRatherThanSilentlyCollapsed() {
+      // employees joined twice (self/manager): collapsing the aliases to one would drop the
+      // manager-role invalidation path and silently miss live changes. Reject at compile time.
+      Outcome out = process("t.Q", "package t; " + IMPORTS
+          + " @PgQuery(\"SELECT e.id FROM employees e JOIN employees m ON m.id = e.manager_id"
+          + " WHERE e.id = $1\") public record Q(java.util.UUID id) {}");
+      assertFalse(out.ok(), "a self-join query must fail compilation, not generate a partial rule");
+      assertTrue(out.anyError("self-join"), () -> "expected a self-join error, got: " + out.errors());
+      assertFalse(out.generated("t/QInvalidation.java"), "no invalidation rule for a rejected self-join");
+    }
+
+    @Test
     void aJoinWrittenChildKeyFirstResolvesTheEdge() {
       Outcome out = process("t.Q", "package t; " + IMPORTS
           + " @PgQuery(\"SELECT w.id FROM widgets w JOIN boxes b ON w.box_id = b.id"
@@ -590,9 +614,9 @@ class PgTypeProcessorTest {
 
     @Test
     void bfsAndEdgeBetweenReturnNullWhenDisconnected() throws Exception {
-      assertNull(invoke("bfs", new Class<?>[] {List.class, String.class, String.class},
+      assertNull(invokeEmitter("bfs", new Class<?>[] {List.class, String.class, String.class},
           List.of(), "a", "b"));
-      assertNull(invoke("edgeBetween", new Class<?>[] {List.class, String.class, String.class},
+      assertNull(invokeEmitter("edgeBetween", new Class<?>[] {List.class, String.class, String.class},
           List.of(), "a", "b"));
     }
 
@@ -601,12 +625,12 @@ class PgTypeProcessorTest {
       Object edges = List.of(qedge("p", "1", "q", "2"));
       var types = new Class<?>[] {List.class, String.class, String.class};
       // a == x but b != y, and a == y but b != x: neither is a full edge, so no match
-      assertNull(invoke("edgeBetween", types, edges, "p", "z"));
-      assertNull(invoke("edgeBetween", types, edges, "z", "p"));
+      assertNull(invokeEmitter("edgeBetween", types, edges, "p", "z"));
+      assertNull(invokeEmitter("edgeBetween", types, edges, "z", "p"));
     }
 
     private static Object qedge(String a, String ca, String b, String cb) throws Exception {
-      Class<?> qedgeClass = Class.forName("monolith.pg.PgTypeProcessor$QEdge");
+      Class<?> qedgeClass = Class.forName("monolith.pg.InvalidationEmitter$QEdge");
       var ctor = qedgeClass.getDeclaredConstructors()[0];
       ctor.setAccessible(true);
       return ctor.newInstance(a, ca, b, cb);
@@ -614,6 +638,13 @@ class PgTypeProcessorTest {
 
     private static Object invoke(String name, Class<?>[] types, Object... args) throws Exception {
       var m = PgTypeProcessor.class.getDeclaredMethod(name, types);
+      m.setAccessible(true);
+      return m.invoke(null, args);
+    }
+
+    /** Like {@link #invoke} but targets the extracted {@link InvalidationEmitter} (SQL-to-rule logic). */
+    private static Object invokeEmitter(String name, Class<?>[] types, Object... args) throws Exception {
+      var m = InvalidationEmitter.class.getDeclaredMethod(name, types);
       m.setAccessible(true);
       return m.invoke(null, args);
     }

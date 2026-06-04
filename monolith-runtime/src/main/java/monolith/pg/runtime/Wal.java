@@ -9,6 +9,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Manages the logical-replication slot and publication the reactive change feed streams from, using
@@ -18,18 +19,42 @@ import java.util.List;
  */
 public final class Wal {
 
+  /**
+   * A safe slot/publication identifier: an SQL identifier start character followed by up to 62 more
+   * identifier characters (63 total, Postgres's identifier byte bound). Slot and publication names are
+   * concatenated into privileged replication/admin SQL, so they must never carry quoting, comment, or
+   * statement-separator characters. Enforced once at every {@link Wal} entry point.
+   */
+  private static final Pattern SLOT = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,62}");
+
+  /**
+   * Returns {@code slot} unchanged if it is a safe identifier, else throws. Apply this to any slot name
+   * before it reaches SQL — it is the single boundary that keeps unvalidated names out of the
+   * replication/admin path (a stray quote breaks publication creation and leaks WAL; a crafted name is
+   * SQL injection into a privileged path).
+   */
+  static String validateSlot(String slot) {
+    if (slot == null || !SLOT.matcher(slot).matches()) {
+      throw new IllegalArgumentException(
+          "invalid replication slot name: <" + slot + ">; must match " + SLOT.pattern());
+    }
+    return slot;
+  }
+
   /** The publication a slot streams: one {@code FOR ALL TABLES}, named after the slot. */
   public static String publication(String slot) {
-    return slot + "_pub";
+    return validateSlot(slot) + "_pub";
   }
 
   public static void recreate(MemorySegment conn, String slot) {
+    validateSlot(slot);
     drop(conn, slot);
     exec(conn, "CREATE PUBLICATION " + publication(slot) + " FOR ALL TABLES");
     exec(conn, "SELECT pg_create_logical_replication_slot('" + slot + "', 'pgoutput')");
   }
 
   public static void drop(MemorySegment conn, String slot) {
+    validateSlot(slot);
     exec(conn, "SELECT pg_drop_replication_slot('" + slot
         + "') FROM pg_replication_slots WHERE slot_name = '" + slot + "'");
     exec(conn, "DROP PUBLICATION IF EXISTS " + publication(slot));
@@ -41,6 +66,7 @@ public final class Wal {
    * its retained WAL fills the disk.
    */
   public static SlotHealth health(MemorySegment conn, String slot) {
+    validateSlot(slot);
     try (Arena a = Arena.ofConfined()) {
       List<String> rows = Pg.textColumn(a, conn,
           "SELECT active::text || '|' || coalesce(wal_status, 'none') || '|'"
@@ -61,6 +87,7 @@ public final class Wal {
    * publication is left in place.
    */
   public static boolean dropInactive(MemorySegment conn, String slot) {
+    validateSlot(slot);
     try (Arena a = Arena.ofConfined()) {
       List<String> dropped = Pg.textColumn(a, conn,
           "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
@@ -71,6 +98,7 @@ public final class Wal {
 
   /** Pull and decode all pgoutput changes buffered since the last drain; consumes them. */
   public static List<WalChange> drain(MemorySegment conn, String slot) {
+    validateSlot(slot);
     try (Arena a = Arena.ofConfined()) {
       List<String> rows = Pg.textColumn(a, conn,
           "SELECT encode(data, 'hex') FROM pg_logical_slot_get_binary_changes('" + slot

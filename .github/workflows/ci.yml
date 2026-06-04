@@ -38,7 +38,7 @@ jobs:
       - name: Build, test, and enforce the coverage gate
         env:
           MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres
-        run: mvn -B --no-transfer-progress clean verify
+        run: mvn -B --no-transfer-progress -Pci clean verify
 
   client:
     runs-on: ubuntu-latest

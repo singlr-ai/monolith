@@ -10,6 +10,7 @@ import java.lang.foreign.MemorySegment;
 import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -106,6 +107,12 @@ public final class PgPool implements ConnectionSource {
 
   public int size() {
     return size;
+  }
+
+  /** A {@link PgPool} targets one database, so a dedicated unpooled side connection can reuse its conninfo. */
+  @Override
+  public Optional<String> dedicatedConninfo() {
+    return Optional.of(conninfo);
   }
 
   @Override

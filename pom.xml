@@ -148,6 +148,28 @@
     </pluginManagement>
 
     <plugins>
+      <!-- Preflight: fail fast with a crisp message when a contributor builds on an older JDK, rather
+           than emitting confusing downstream compiler errors. The library targets JDK 25 (Panama FFM). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.5.0</version>
+        <executions>
+          <execution>
+            <id>enforce-jdk-25</id>
+            <phase>validate</phase>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[25,)</version>
+                  <message>This project requires JDK 25 or newer (Panama FFM). See README "Requirements".</message>
+                </requireJavaVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!-- Coverage: instrument tests and emit a per-module report under target/site/jacoco. -->
       <plugin>
         <groupId>org.jacoco</groupId>
@@ -213,6 +235,27 @@
   </build>
 
   <profiles>
+    <!-- -Pci requires the database harness: it sets monolith.requireDb=true so RequireDatabaseIT turns
+         a missing or non-logical Postgres into a hard build failure instead of letting the database
+         integration tests silently self-skip. CI runs `mvn -Pci ... verify` after starting postgres:18
+         with wal_level=logical; run it locally the same way to reproduce CI exactly. -->
+    <profile>
+      <id>ci</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <systemPropertyVariables>
+                <monolith.requireDb>true</monolith.requireDb>
+              </systemPropertyVariables>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
     <!-- -Pbenchmarks adds the JMH module. Kept out of the default reactor so the offline
          `mvn verify` and CI never need to download JMH or run benchmarks. Build the runner with
          `mvn -Pbenchmarks -pl monolith-benchmarks -am package`, then run benchmarks.jar with

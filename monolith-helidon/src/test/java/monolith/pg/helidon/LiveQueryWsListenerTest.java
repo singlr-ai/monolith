@@ -7,7 +7,9 @@ package monolith.pg.helidon;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.helidon.common.buffers.BufferData;
@@ -109,11 +111,60 @@ class LiveQueryWsListenerTest {
   }
 
   @Test
-  void anUnknownQueryIsRejected() {
+  void anUnknownQueryIsRejectedWithoutDisclosingTheName() {
     var s = new FakeSession();
     fixture().listener().onMessage(s, "Nope:p", true);
     assertEquals(1008, s.closeCode);
-    assertTrue(s.closeReason.contains("Nope"));
+    assertEquals(0, s.sends);
+    assertFalse(s.closeReason.contains("Nope"),
+        "the close reason must not echo the query name (it would confirm which names exist)");
+  }
+
+  @Test
+  void anUnauthorizedSubscriptionIsRejectedIdenticallyToAnUnknownQuery() {
+    var hub = new ReactiveHub(null, List.of(rule("Q", "t", Set.of("p1"))));
+    var runs = new AtomicInteger();
+    var listener = LiveQueryWsListener.builder(hub)
+        .authorize((session, query, param) -> false) // deny everything
+        .query("Q", param -> { runs.incrementAndGet(); return WsResults.frame(List.of()); })
+        .build();
+
+    var denied = new FakeSession();
+    listener.onMessage(denied, "Q:p1", true);   // a real query, but not authorized
+    var unknown = new FakeSession();
+    listener.onMessage(unknown, "Nope:p1", true); // a non-existent query
+
+    assertEquals(0, runs.get(), "the runner must not execute for an unauthorized subscription");
+    assertEquals(0, denied.sends);
+    assertEquals(1008, denied.closeCode);
+    assertEquals(unknown.closeReason, denied.closeReason,
+        "unauthorized and unknown-query rejections must be indistinguishable");
+
+    hub.apply(new WalChange("t", java.util.Map.of())); // no subscription should have been registered
+    assertEquals(0, denied.sends, "a denied session must receive no pushes on later changes");
+  }
+
+  @Test
+  void aParamLongerThanTheCapIsRejected() {
+    var hub = new ReactiveHub(null, List.of());
+    var runs = new AtomicInteger();
+    var listener = LiveQueryWsListener.builder(hub)
+        .withMaxParamLength(8)
+        .query("Q", param -> { runs.incrementAndGet(); return WsResults.frame(List.of()); })
+        .build();
+    var s = new FakeSession();
+
+    listener.onMessage(s, "Q:" + "x".repeat(9), true);
+
+    assertEquals(1008, s.closeCode);
+    assertEquals(0, s.sends);
+    assertEquals(0, runs.get(), "an over-long param must be rejected before the runner executes");
+  }
+
+  @Test
+  void aNonPositiveParamCapIsRejectedAtBuildTime() {
+    var b = LiveQueryWsListener.builder(new ReactiveHub(null, List.of()));
+    assertThrows(IllegalArgumentException.class, () -> b.withMaxParamLength(0));
   }
 
   @Test

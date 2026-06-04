@@ -141,6 +141,9 @@ class RuntimeIT {
       MemorySegment c = pool.lease().getOrThrow();
       pool.release(c);
       assertEquals(0, pool.replacedCount());
+      // A pool targets one database, so it exposes its conninfo for a dedicated unpooled side connection
+      // (e.g. a queue worker's LISTEN), rather than tying up a pool slot for the consumer's whole life.
+      assertEquals(CONNINFO, pool.dedicatedConninfo().orElseThrow());
     }
   }
 

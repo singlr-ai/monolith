@@ -40,6 +40,13 @@ class ShardRouterTest {
   }
 
   @Test
+  void aSourceWithoutASingleDatabaseHasNoDedicatedConninfo() {
+    // The interface default: a plain source (and any multi-database source) exposes no conninfo for a
+    // dedicated side connection, so consumers like a queue worker fall back to a pooled lease.
+    assertTrue(new FakeSource().dedicatedConninfo().isEmpty());
+  }
+
+  @Test
   void anExplicitRouteFunctionIsHonored() {
     var only = new FakeSource();
     var router = new ShardRouter(Map.of("eu", only), tenant -> "eu");

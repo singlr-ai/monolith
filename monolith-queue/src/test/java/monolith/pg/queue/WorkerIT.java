@@ -171,6 +171,37 @@ class WorkerIT {
     assertEquals(1, count("status = 'succeeded'"), "the in-flight message completed before close returned");
   }
 
+  @Test
+  @DisplayName("it makes progress on a single-connection pool (the listener does not hog the pool)")
+  void deliversWithASingleConnectionPool() {
+    enqueue("t", null, "m", 5);
+    try (PgPool tiny = new PgPool(CONNINFO, 1);
+        Worker ignored = Queue.worker(tiny, "t")
+            .withConcurrency(1).withPollInterval(Duration.ofMillis(50)).withLease(Duration.ofSeconds(30))
+            .onMessage((c, m) -> Result.success(null)).start()) {
+      awaitUntil(() -> count("status = 'succeeded'") == 1, "delivered against a size-1 pool");
+    }
+  }
+
+  @Test
+  @DisplayName("close returns promptly even when the pool has no spare connection for a wake")
+  void closeDoesNotBlockOnAnExhaustedPool() {
+    try (PgPool tiny = new PgPool(CONNINFO, 1, Duration.ofSeconds(30))) {
+      Worker worker = Queue.worker(tiny, "t").withPollInterval(Duration.ofSeconds(2))
+          .withLease(Duration.ofSeconds(30)).onMessage((c, m) -> Result.success(null)).start();
+      sleep(300); // let the idle worker settle into awaitNotification on its dedicated listener
+      MemorySegment held = tiny.lease().getOrThrow(); // exhaust the pool: any pool lease would now block 30s
+      try {
+        long t0 = System.nanoTime();
+        worker.close();
+        long ms = Duration.ofNanos(System.nanoTime() - t0).toMillis();
+        assertTrue(ms < 5000, "close must not block on the pool lease timeout; took " + ms + "ms");
+      } finally {
+        tiny.release(held);
+      }
+    }
+  }
+
   // ---- helpers ----
 
   private Worker.Builder worker(String topic) {

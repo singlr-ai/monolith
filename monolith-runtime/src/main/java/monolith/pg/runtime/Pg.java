@@ -355,7 +355,8 @@ public final class Pg {
   // virtual thread can unmount (an FFM downcall otherwise pins its carrier for the whole round trip),
   // then a single reactor thread multiplexes every in-flight query via pollReadable. Not yet wired
   // into the generated query path; see ROADMAP "Async, non-pinning query dispatch". Until then these
-  // entry points are untrusted native surface (no integration test exercises them).
+  // entry points are untrusted native surface (no integration test exercises them), so they are
+  // package-private, not public API: reachable by the streaming path in this package, not downstream.
 
   /**
    * Dispatch a binary-param query requesting a binary result, <b>without</b> waiting
@@ -365,7 +366,7 @@ public final class Pg {
    * {@link #consumeInput}/{@link #isBusy}/{@link #getResult}. The connection must not
    * be touched by another thread until {@code getResult} returns NULL.
    */
-  public static boolean sendQueryParamsBinary(
+  static boolean sendQueryParamsBinary(
       Arena arena, MemorySegment conn, String sql,
       MemorySegment[] values, int[] lengths, int[] formats) {
     try {
@@ -391,19 +392,19 @@ public final class Pg {
   }
 
   /** Read whatever input is available on the socket without blocking; false on failure. */
-  public static boolean consumeInput(MemorySegment conn) {
+  static boolean consumeInput(MemorySegment conn) {
     try { return ((int) PQconsumeInput.invokeExact(conn)) == 1; }
     catch (Throwable t) { throw new RuntimeException(t); }
   }
 
   /** True if a command is still in progress (a {@link #getResult} call would block). */
-  public static boolean isBusy(MemorySegment conn) {
+  static boolean isBusy(MemorySegment conn) {
     try { return ((int) PQisBusy.invokeExact(conn)) == 1; }
     catch (Throwable t) { throw new RuntimeException(t); }
   }
 
   /** Next result for the in-flight command, or NULL when the command is complete. */
-  public static MemorySegment getResult(MemorySegment conn) {
+  static MemorySegment getResult(MemorySegment conn) {
     try { return (MemorySegment) PQgetResult.invokeExact(conn); }
     catch (Throwable t) { throw new RuntimeException(t); }
   }
@@ -491,7 +492,7 @@ public final class Pg {
    * blocking native call covers all fds, so a single thread multiplexes every in-flight
    * query, and the application virtual threads that submitted them stay unmounted.
    */
-  public static boolean[] pollReadable(Arena arena, int[] fds, int timeoutMs) {
+  static boolean[] pollReadable(Arena arena, int[] fds, int timeoutMs) {
     try {
       int n = fds.length;
       boolean[] ready = new boolean[n];

@@ -54,6 +54,8 @@ public final class Worker implements AutoCloseable {
   private volatile boolean running;
   private Thread control;
   private MemorySegment listenConn; // held for the worker's life, LISTENing for enqueue notifications
+  private String listenConninfo;    // non-null when listenConn is a dedicated unpooled connection we own
+  private boolean ownsListener;     // whether to finish (true) or release to the pool (false) listenConn
 
   private Worker(Builder builder) {
     this.source = builder.source;
@@ -68,7 +70,7 @@ public final class Worker implements AutoCloseable {
 
   private Worker start() {
     running = true;
-    listenConn = source.lease().getOrThrow();
+    listenConn = openListener();
     try (Arena arena = Arena.ofConfined()) {
       Pg.listen(arena, listenConn, "\"monolith_queue_" + topic + "\""); // quoted channel identifier
     }
@@ -76,6 +78,24 @@ public final class Worker implements AutoCloseable {
     heartbeat.scheduleAtFixedRate(this::renewLeases, beatMillis, beatMillis, TimeUnit.MILLISECONDS);
     control = Thread.ofVirtual().name("monolith-queue-" + topic).start(this::loop);
     return this;
+  }
+
+  /**
+   * Opens the connection the worker {@code LISTEN}s on for its whole life. When the source exposes a
+   * conninfo (a single-database {@link monolith.pg.runtime.PgPool}), this is a dedicated <em>unpooled</em>
+   * connection, so the worker never ties up a pool slot — a size-1 pool stays usable for claiming and
+   * delivery. Multi-database sources fall back to a pooled lease.
+   */
+  private MemorySegment openListener() {
+    String conninfo = source.dedicatedConninfo().orElse(null);
+    if (conninfo != null) {
+      this.listenConninfo = conninfo;
+      this.ownsListener = true;
+      try (Arena arena = Arena.ofConfined()) {
+        return Pg.connect(arena, conninfo).getOrThrow();
+      }
+    }
+    return source.lease().getOrThrow();
   }
 
   private void loop() {
@@ -123,19 +143,38 @@ public final class Worker implements AutoCloseable {
     }
   }
 
-  /** Sends a notification on the topic's channel so a blocked {@link #awaitNotification} returns at once. */
+  /**
+   * Sends a notification on the topic's channel so a blocked {@link #awaitNotification} returns at once.
+   * On the dedicated-listener path this uses a transient <em>unpooled</em> connection, so {@link #close}
+   * never blocks on an exhausted pool; otherwise it leases from the pool as before.
+   */
   private void wakeListener() {
+    if (ownsListener) {
+      try (Arena arena = Arena.ofConfined()) {
+        MemorySegment conn = Pg.connect(arena, listenConninfo).getOrThrow();
+        try {
+          notifyTopic(arena, conn);
+        } finally {
+          Pg.finish(conn);
+        }
+      }
+      return;
+    }
     MemorySegment conn = source.lease().getOrThrow();
     try (Arena arena = Arena.ofConfined()) {
-      var p = PgParam.bind(arena, "monolith_queue_" + topic);
-      Pg.execParamsBinary(arena, conn, "SELECT pg_notify($1, '')", p.values(), p.lengths(), p.formats())
-          .map(res -> {
-            Pg.clear(res);
-            return res;
-          }).getOrThrow();
+      notifyTopic(arena, conn);
     } finally {
       source.release(conn);
     }
+  }
+
+  private void notifyTopic(Arena arena, MemorySegment conn) {
+    var p = PgParam.bind(arena, "monolith_queue_" + topic);
+    Pg.execParamsBinary(arena, conn, "SELECT pg_notify($1, '')", p.values(), p.lengths(), p.formats())
+        .map(res -> {
+          Pg.clear(res);
+          return res;
+        }).getOrThrow();
   }
 
   private void renewLeases() {
@@ -155,13 +194,22 @@ public final class Worker implements AutoCloseable {
   public void close() {
     running = false;
     LockSupport.unpark(control);
-    wakeListener(); // in case the control thread is blocked in awaitNotification
+    try {
+      wakeListener(); // nudge a blocked awaitNotification; best effort, it also wakes on the poll timeout
+    } catch (RuntimeException e) {
+      // a wake failure (e.g. the database is down) must not stall shutdown: awaitNotification has a
+      // poll-interval timeout, so the control loop still observes running=false and exits on its own.
+    }
     try {
       control.join();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
-    source.release(listenConn);
+    if (ownsListener) {
+      Pg.finish(listenConn); // we own the dedicated connection; close it rather than returning to the pool
+    } else {
+      source.release(listenConn);
+    }
     heartbeat.close();
   }
 

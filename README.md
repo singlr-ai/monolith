@@ -47,8 +47,11 @@ hub.subscribe("OrderSummary", "EU", () -> pushFreshResultToClients());
 - **libpq, not JDBC**: the binary protocol via the Java FFM API; TLS and SCRAM are libpq's.
 - **Transactions with automatic retry**, **schema migrations**, **binary parameters** (arrays, enums,
   prepared statements), and a **durable transactional queue** (outbox + jobs in one primitive).
-- **Compliance in the database**: `@Encrypted` envelope encryption, `@Tenant` and `@AccessControlled`
-  forced row-level security (a unified RBAC/ACL/consent grant model), `@Audited` trails.
+- **Compliance _primitives_ in the database**: `@Encrypted` envelope encryption, `@Tenant` and
+  `@AccessControlled` forced row-level security (a unified RBAC/ACL/consent grant model), `@Audited`
+  trails. These are building blocks, not a turnkey HIPAA/SOC 2 posture — key custody defaults to an
+  in-process key, and read-access audit and PHI-safe observability are not yet shipped. See
+  [`SECURITY.md`](SECURITY.md) and the [roadmap](ROADMAP.md) for exactly what is and isn't covered.
 - **Scale-out routing**: read replicas and tenant sharding over a common `ConnectionSource`.
 - **A library, not a platform**: pure-JDK core, no web framework; bring your own `main` and routes.
 
@@ -76,7 +79,23 @@ Every module except `monolith-helidon` has no web dependency, and nothing in the
 
 **v0.1: experimental; APIs will change.** Requires **JDK 25+** (Panama FFM, virtual threads) and
 **PostgreSQL 14+** (`wal_level = logical` for the reactive layer). **macOS and Linux** (libpq is loaded
-via FFM); Windows via WSL2.
+via FFM); Windows via WSL2. The Maven build enforces the JDK floor (`maven-enforcer-plugin`), so an older
+JDK fails fast with a clear message instead of cryptic compiler errors.
+
+**Reproducing CI locally.** Many integration tests self-skip when no database is reachable, so a bare
+`mvn verify` can pass while exercising none of the FFM/WAL/queue/compliance paths. Run the CI-equivalent
+build against a real Postgres with logical decoding:
+
+```sh
+# Postgres 18 with wal_level=logical, e.g. via Docker:
+#   docker run -d --name monolith-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 \
+#     postgres:18 -c wal_level=logical
+MONOLITH_TEST_CONNINFO="host=localhost dbname=monolith_test user=postgres" \
+  mvn -B -Pci clean verify
+```
+
+The `-Pci` profile sets `monolith.requireDb=true`, which makes the build **fail** (rather than silently
+skip) if that database is not actually reachable.
 
 **Goals.** A live-subscription developer experience on a real relational database, for Java teams; type
 safety carried from the database row to the client; libraries you embed, not a platform you adopt.

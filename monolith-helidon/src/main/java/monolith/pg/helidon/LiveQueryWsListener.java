@@ -47,13 +47,32 @@ public final class LiveQueryWsListener implements WsListener {
     byte[] run(String param);
   }
 
+  /**
+   * Decides whether a session may subscribe to a query+param — the first-class authorization hook. Set
+   * tenant/actor context (or consult it) here and return {@code false} to reject. The default policy
+   * {@linkplain Builder#authorize allows every subscription}, so a network-facing deployment must
+   * install one; otherwise any client can subscribe by guessing query names and params.
+   */
+  @FunctionalInterface
+  public interface Authorizer {
+    boolean authorize(WsSession session, String query, String param);
+  }
+
+  /** A single, non-disclosing rejection reason so an unknown query cannot be told from an unauthorized one. */
+  private static final String REJECTED = "subscription rejected";
+
   private final ReactiveHub hub;
   private final Map<String, QueryRunner> runners;
+  private final Authorizer authorizer;
+  private final int maxParamLength;
   private final Map<WsSession, ReactiveHub.Subscription> subs = new ConcurrentHashMap<>();
 
-  private LiveQueryWsListener(ReactiveHub hub, Map<String, QueryRunner> runners) {
+  private LiveQueryWsListener(
+      ReactiveHub hub, Map<String, QueryRunner> runners, Authorizer authorizer, int maxParamLength) {
     this.hub = hub;
     this.runners = runners;
+    this.authorizer = authorizer;
+    this.maxParamLength = maxParamLength;
   }
 
   public static Builder builder(ReactiveHub hub) {
@@ -65,14 +84,20 @@ public final class LiveQueryWsListener implements WsListener {
     if (subs.containsKey(session)) return; // one subscription per session; ignore extra frames
     int colon = text.indexOf(':');
     if (colon < 0) {
-      session.close(1008, "expected '<QueryName>:<param>'");
+      session.close(1008, "malformed subscription frame"); // generic: do not hint the protocol grammar
       return;
     }
     String query = text.substring(0, colon);
     String param = text.substring(colon + 1).trim();
+    if (param.length() > maxParamLength) {
+      session.close(1008, REJECTED); // bound the param before it reaches the hub or a runner
+      return;
+    }
     QueryRunner runner = runners.get(query);
-    if (runner == null) {
-      session.close(1008, "unknown query: " + query);
+    // An unknown query and an unauthorized one are rejected identically, so a client cannot probe which
+    // query names exist. The authorizer runs only for a real query, but the response is the same either way.
+    if (runner == null || !authorizer.authorize(session, query, param)) {
+      session.close(1008, REJECTED);
       return;
     }
     ReactiveHub.Subscription sub = hub.subscribe(query, param, () -> push(session, runner, param));
@@ -105,6 +130,8 @@ public final class LiveQueryWsListener implements WsListener {
   public static final class Builder {
     private final ReactiveHub hub;
     private final Map<String, QueryRunner> runners = new HashMap<>();
+    private Authorizer authorizer = (session, query, param) -> true; // allow-all until one is set
+    private int maxParamLength = 1024;
 
     private Builder(ReactiveHub hub) {
       this.hub = hub;
@@ -116,8 +143,27 @@ public final class LiveQueryWsListener implements WsListener {
       return this;
     }
 
+    /**
+     * Set the authorization hook. It runs before every subscription; return {@code false} to reject.
+     * Strongly recommended for any network-facing endpoint — without one, any client can subscribe by
+     * guessing query names and params.
+     */
+    public Builder authorize(Authorizer authorizer) {
+      this.authorizer = java.util.Objects.requireNonNull(authorizer, "authorizer");
+      return this;
+    }
+
+    /** Cap the accepted param length (default 1024) to bound untrusted input before it reaches the hub. */
+    public Builder withMaxParamLength(int maxParamLength) {
+      if (maxParamLength < 1) {
+        throw new IllegalArgumentException("maxParamLength must be positive: " + maxParamLength);
+      }
+      this.maxParamLength = maxParamLength;
+      return this;
+    }
+
     public LiveQueryWsListener build() {
-      return new LiveQueryWsListener(hub, Map.copyOf(runners));
+      return new LiveQueryWsListener(hub, Map.copyOf(runners), authorizer, maxParamLength);
     }
   }
 }
