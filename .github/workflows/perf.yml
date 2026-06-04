@@ -1,24 +1,37 @@
 name: Performance and soak
 
-# Profiling, microbenchmarking, and long stress/soak runs, kept out of the per-push CI so they can run
-# for a long time without gating merges. Trigger it manually (Actions tab) with a chosen soak duration,
-# or let the nightly schedule run a bounded version. Results (JMH JSON, soak log, native-memory summary)
-# are uploaded as an artifact.
+# Profiling, microbenchmarking, and long stress/soak/chaos runs, kept out of the per-push CI so they can
+# run for a long time without gating merges. Trigger it manually (Actions tab) with chosen durations, or
+# let the nightly schedule run a bounded version. All logs, the JMH JSON, and the native-memory diff are
+# uploaded as an artifact.
 #
-# GitHub-hosted runners cap a job at 6 hours. For multi-hour or overnight soaks, run this on a
-# self-hosted runner or raise the duration toward the timeout below.
+# The soak runs the FFM path under a deliberately small heap (the 'soak' profile, -Xmx256m) with
+# native-memory tracking, so a leak or allocation-pressure bug surfaces under constraint instead of behind
+# a runner's RAM. The leak watch fails the run if resident memory grows without bound under the heap cap.
+#
+# GitHub-hosted runners cap a job at 6 hours. For multi-hour or overnight soaks, dispatch with longer
+# durations (within the timeout below) or run on a self-hosted runner.
 
 on:
   workflow_dispatch:
     inputs:
       stress_seconds:
-        description: 'FfmStressIT soak duration in seconds (the FFM binary path under load)'
+        description: 'FfmStressIT: the FFM binary path under sustained concurrent load'
+        default: '3600'
+      fault_seconds:
+        description: 'FfmFaultIT: the FFM path under sustained backend kills'
+        default: '1800'
+      chaos_seconds:
+        description: 'ReactiveChaosIT: the change feed under a sustained random fault storm'
+        default: '900'
+      leak_seconds:
+        description: 'Native-memory leak watch: hammer the FFM path and watch resident memory'
         default: '1800'
       jmh_args:
         description: 'Extra JMH args, e.g. "-f 3" for more forks or "-prof gc" to profile allocation'
         default: '-f 2'
   schedule:
-    # Nightly at 07:00 UTC, a bounded run (uses the fallback duration and a single fork).
+    # Nightly at 07:00 UTC, a bounded run (the fallback durations below, single JMH fork).
     - cron: '0 7 * * *'
 
 # One long perf run at a time; never cancel an in-flight soak.
@@ -32,6 +45,11 @@ jobs:
     timeout-minutes: 350
     env:
       MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres
+      # Nightly durations (the dispatch inputs override these). Kept modest so the nightly fits the timeout.
+      STRESS_SECONDS: ${{ github.event.inputs.stress_seconds || '600' }}
+      FAULT_SECONDS: ${{ github.event.inputs.fault_seconds || '300' }}
+      CHAOS_SECONDS: ${{ github.event.inputs.chaos_seconds || '180' }}
+      LEAK_SECONDS: ${{ github.event.inputs.leak_seconds || '600' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -68,27 +86,59 @@ jobs:
           ${{ github.event.inputs.jmh_args || '-f 1' }}
           -rf json -rff jmh-result.json -foe true | tee jmh.log
 
-      # Install the reactor so the soak can run the runtime module in isolation.
+      # Install the reactor so the soak can run a single module in isolation.
       - name: Build reactor for the soak
         run: mvn -B -DskipTests install
 
-      # Stress the FFM binary path under a deliberately small heap with native-memory tracking on, so a
-      # leak or allocation-pressure bug surfaces under constraint instead of behind a runner's RAM.
-      - name: Stress and soak under a constrained JVM
+      - name: 'Soak: FFM binary path under sustained load'
         env:
-          MONOLITH_STRESS_SECONDS: ${{ github.event.inputs.stress_seconds || '600' }}
+          MONOLITH_STRESS_SECONDS: ${{ env.STRESS_SECONDS }}
         run: >
           mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime
-          test -Dtest=FfmStressIT | tee soak.log
+          test -Dtest=FfmStressIT | tee soak-stress.log
 
-      # Run the binary path under NMT and print the native-memory summary at exit, so growth in
-      # committed native memory (an Arena that is not being freed) is visible in the artifact.
-      - name: Native-memory leak summary
+      - name: 'Soak: FFM path under sustained backend kills'
+        env:
+          MONOLITH_FAULT_SECONDS: ${{ env.FAULT_SECONDS }}
         run: >
-          java --enable-native-access=ALL-UNNAMED
-          -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics
-          -jar monolith-benchmarks/target/benchmarks.jar BinaryQueryBench
-          -f 1 -wi 2 -i 10 -r 5 2>&1 | tee nmt.log
+          mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime
+          test -Dtest=FfmFaultIT | tee soak-fault.log
+
+      - name: 'Soak: change feed under a sustained fault storm'
+        env:
+          MONOLITH_CHAOS_SECONDS: ${{ env.CHAOS_SECONDS }}
+        run: >
+          mvn -B -Djacoco.skip=true -pl monolith-reactive
+          test -Dtest=ReactiveChaosIT -Dsurefire.failIfNoSpecifiedTests=false | tee soak-chaos.log
+
+      # Hammer the FFM path under a 256MB heap with native-memory tracking, baseline after warmup, and
+      # watch resident memory. Heap is capped, so RSS growth is native: an Arena or MemorySegment that is
+      # not being freed. Fail the run if it grows past the threshold.
+      - name: 'Native-memory leak watch'
+        run: |
+          java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:NativeMemoryTracking=summary \
+            -jar monolith-benchmarks/target/benchmarks.jar BinaryQueryBench \
+            -f 1 -wi 1 -w 10 -i 1 -r "${LEAK_SECONDS}" > leakbench.log 2>&1 &
+          PID=$!
+          sleep 45 # warm up: let the JIT settle and the pool fill before the baseline
+          RSS_START=$(ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ')
+          jcmd "$PID" VM.native_memory baseline > /dev/null 2>&1 || true
+          RSS_END="${RSS_START:-0}"
+          # Poll resident memory while the workload runs, keeping the last reading and a fresh NMT diff.
+          while kill -0 "$PID" 2>/dev/null; do
+            CUR=$(ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ')
+            [ -n "$CUR" ] && RSS_END="$CUR"
+            jcmd "$PID" VM.native_memory summary.diff > nmt-diff.log 2>&1 || true
+            sleep 15
+          done
+          wait "$PID" 2>/dev/null || true
+          GROWTH_MB=$(( ( ${RSS_END:-0} - ${RSS_START:-0} ) / 1024 ))
+          echo "RSS start=${RSS_START}KB end=${RSS_END}KB growth=${GROWTH_MB}MB (heap capped at 256MB)" | tee nmt.log
+          if [ "${GROWTH_MB:-0}" -gt 150 ]; then
+            echo "::error::resident memory grew ${GROWTH_MB}MB under a 256MB heap cap: likely an Arena/MemorySegment leak"
+            exit 1
+          fi
+          echo "no native-memory leak detected: RSS stable within threshold"
 
       - name: Upload results
         if: always()
@@ -98,6 +148,10 @@ jobs:
           path: |
             jmh-result.json
             jmh.log
-            soak.log
+            soak-stress.log
+            soak-fault.log
+            soak-chaos.log
+            leakbench.log
+            nmt-diff.log
             nmt.log
           if-no-files-found: warn
