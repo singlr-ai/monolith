@@ -92,7 +92,15 @@ public final class Tx {
   private static <T> Result<T> runOnce(MemorySegment conn, Work<T> work) {
     try (Arena a = Arena.ofConfined()) {
       Pg.exec(a, conn, "BEGIN").getOrThrow();
-      Result<T> outcome = work.run(conn);
+      Result<T> outcome;
+      try {
+        outcome = work.run(conn);
+      } catch (RuntimeException | Error thrown) {
+        // The work threw rather than returning a Result. Roll back before propagating so we never
+        // leave an open transaction on the connection, then rethrow the original failure unretried.
+        Pg.exec(a, conn, "ROLLBACK");
+        throw thrown;
+      }
       // Commit a success, roll back a failure. A failed COMMIT (Postgres has already rolled the
       // transaction back) replaces the outcome, so a conflict raised only at commit is still retried.
       Result<Void> end = Pg.exec(a, conn, outcome.isSuccess() ? "COMMIT" : "ROLLBACK");

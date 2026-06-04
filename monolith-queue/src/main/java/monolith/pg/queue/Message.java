@@ -7,6 +7,7 @@ package monolith.pg.queue;
 
 import java.time.Instant;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * A message to enqueue: a {@code topic} (which logical queue), an opaque binary {@code payload}, and
@@ -27,15 +28,33 @@ public record Message(
   /** Default attempt budget before a message is dead-lettered. */
   public static final int DEFAULT_MAX_ATTEMPTS = 25;
 
+  /**
+   * Allowed topic shape: an identifier-safe channel name with no quoting tricks. A topic becomes part of
+   * a {@code LISTEN} channel identifier ({@code "monolith_queue_" + topic}); restricting it to this
+   * charset means it can never break out of the quoted identifier. The 48-char cap keeps the prefixed
+   * channel name within Postgres's 63-byte {@code NOTIFY} channel limit.
+   */
+  private static final Pattern TOPIC = Pattern.compile("[A-Za-z0-9._-]{1,48}");
+
   public Message {
-    Objects.requireNonNull(topic, "topic");
-    if (topic.isBlank()) {
-      throw new IllegalArgumentException("topic must not be blank");
-    }
+    requireValidTopic(topic);
     Objects.requireNonNull(payload, "payload");
     if (maxAttempts < 1) {
       throw new IllegalArgumentException("maxAttempts must be at least 1: " + maxAttempts);
     }
+  }
+
+  /**
+   * Validates a queue topic, the single boundary for every topic that reaches SQL (as a {@code LISTEN}
+   * channel identifier or a bound parameter). Returns the topic so callers can validate inline.
+   */
+  static String requireValidTopic(String topic) {
+    Objects.requireNonNull(topic, "topic");
+    if (!TOPIC.matcher(topic).matches()) {
+      throw new IllegalArgumentException(
+          "topic must match [A-Za-z0-9._-]{1,48} (an identifier-safe channel name): \"" + topic + "\"");
+    }
+    return topic;
   }
 
   public static Builder builder() {

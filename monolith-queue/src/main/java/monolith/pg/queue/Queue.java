@@ -120,8 +120,19 @@ public final class Queue {
     }
   }
 
-  /** Begins configuring a {@link Worker} that drains {@code topic} from {@code source}. */
+  /**
+   * Begins configuring a {@link Worker} that drains {@code topic} from {@code source}.
+   *
+   * <p>A worker holds one connection for its whole life to {@code LISTEN} for enqueue notifications. When
+   * {@code source} is a single-database {@link monolith.pg.runtime.PgPool} (it exposes a
+   * {@link ConnectionSource#dedicatedConninfo() dedicated conninfo}), that listener is a dedicated
+   * <em>unpooled</em> connection, so it never ties up a pool slot — even a size-1 pool stays usable for
+   * claiming and delivery. A composed source (a shard router or replica set) exposes no dedicated
+   * conninfo, so the listener falls back to a <em>pooled</em> lease held for the worker's life: size such
+   * a source to leave at least one connection beyond the listener, or the worker cannot also claim.
+   */
   public static Worker.Builder worker(ConnectionSource source, String topic) {
+    Message.requireValidTopic(topic); // the topic becomes a LISTEN channel identifier in the worker
     return new Worker.Builder(source, topic);
   }
 
@@ -154,6 +165,7 @@ public final class Queue {
    */
   public static Result<List<DeliveredMessage>> claim(
       MemorySegment conn, String topic, int batchSize, Duration lease) {
+    Message.requireValidTopic(topic);
     try (Arena arena = Arena.ofConfined()) {
       // LIMIT infers int8 (bind a long); `$3 * interval` infers float8 (bind a double).
       var p = PgParam.bind(arena, topic, (long) batchSize, (double) lease.toSeconds());
@@ -194,6 +206,7 @@ public final class Queue {
 
   /** Lists up to {@code limit} dead-lettered messages for {@code topic}, oldest first, to inspect. */
   public static Result<List<DeadMessage>> deadLetters(MemorySegment conn, String topic, int limit) {
+    Message.requireValidTopic(topic);
     try (Arena arena = Arena.ofConfined()) {
       var p = PgParam.bind(arena, topic, (long) limit);
       return Pg.execParamsBinary(arena, conn, DEAD_LETTERS_SQL, p.values(), p.lengths(), p.formats())
@@ -218,6 +231,7 @@ public final class Queue {
 
   /** Deletes succeeded messages for {@code topic} older than {@code olderThan}; returns how many. */
   public static Result<Integer> purgeSucceeded(MemorySegment conn, String topic, Duration olderThan) {
+    Message.requireValidTopic(topic);
     try (Arena arena = Arena.ofConfined()) {
       var p = PgParam.bind(arena, topic, (double) olderThan.toSeconds());
       return Pg.execParamsBinary(arena, conn, PURGE_SQL, p.values(), p.lengths(), p.formats())

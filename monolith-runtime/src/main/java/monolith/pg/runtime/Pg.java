@@ -137,6 +137,7 @@ public final class Pg {
           PQconnectdb.invokeExact((MemorySegment) arena.allocateFrom(conninfo, StandardCharsets.UTF_8));
       if ((int) PQstatus.invokeExact(conn) != CONNECTION_OK) {
         String err = cstr((MemorySegment) PQerrorMessage.invokeExact(conn));
+        PQfinish.invokeExact(conn); // libpq requires PQfinish even for a failed connection object
         return Result.failure("connect failed: " + err);
       }
       return Result.success(conn);

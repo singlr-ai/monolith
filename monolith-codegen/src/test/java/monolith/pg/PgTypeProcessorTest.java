@@ -367,6 +367,8 @@ class PgTypeProcessorTest {
       assertTrue(sql.contains("acct_audit_write"));
       assertTrue(sql.contains("acct_audit_guard"));
       assertTrue(sql.contains("SECURITY DEFINER"));
+      assertTrue(sql.contains("SET search_path FROM CURRENT"),
+          () -> "the audit function must pin search_path to resist caller hijacking; got:\n" + sql);
       assertTrue(sql.contains("append-only"));
     }
 
@@ -398,6 +400,51 @@ class PgTypeProcessorTest {
       assertTrue(sql.contains("d.effect = 'deny'"));
       assertTrue(sql.contains("FROM monolith_role_member")); // role indirection
       assertTrue(sql.contains("current_setting('app.actor', true)"));
+    }
+
+    @Test
+    void readAndWriteRelationsEmitCommandSpecificPolicies() throws IOException {
+      String sql = sqlFor("@AccessControlled(read = {\"viewer\", \"care_team\"}, write = {\"owner\", \"editor\"})"
+          + " @PgType public record Acct(java.util.UUID id, int n) {}");
+      // One policy per command, so a grant only authorizes the action its relation is mapped to.
+      assertTrue(sql.contains("CREATE POLICY acct_select ON acct FOR SELECT"), () -> sql);
+      assertTrue(sql.contains("CREATE POLICY acct_insert ON acct FOR INSERT"), () -> sql);
+      assertTrue(sql.contains("CREATE POLICY acct_update ON acct FOR UPDATE"), () -> sql);
+      assertTrue(sql.contains("CREATE POLICY acct_delete ON acct FOR DELETE"), () -> sql);
+      // The SELECT policy is keyed on the read relations, the write commands on the write relations.
+      assertTrue(sql.contains("g.relation IN ('viewer', 'care_team')"), () -> sql);
+      assertTrue(sql.contains("g.relation IN ('owner', 'editor')"), () -> sql);
+      // Deny is relation-scoped too, so a deny on a write relation blocks writes, not reads.
+      assertTrue(sql.contains("d.relation IN ('owner', 'editor')"), () -> sql);
+      // The relation-agnostic single policy is not emitted in relation-aware mode.
+      assertFalse(sql.contains("CREATE POLICY acct_access ON acct"), () -> sql);
+    }
+
+    @Test
+    void anActionWithNoRelationsIsFailClosed() throws IOException {
+      // read-only access control: writes have no granting relation, so the write policies are fail-closed.
+      String sql = sqlFor("@AccessControlled(read = {\"viewer\"})"
+          + " @PgType public record Acct(java.util.UUID id) {}");
+      assertTrue(sql.contains("CREATE POLICY acct_insert ON acct FOR INSERT\n  WITH CHECK (false)"), () -> sql);
+      assertTrue(sql.contains("CREATE POLICY acct_delete ON acct FOR DELETE\n  USING (false)"), () -> sql);
+      assertTrue(sql.contains("g.relation IN ('viewer')"), () -> sql);
+    }
+
+    @Test
+    void writeOnlyAccessControlFailClosesReads() throws IOException {
+      // write relations only: reads have no granting relation, so the SELECT policy is fail-closed.
+      String sql = sqlFor("@AccessControlled(write = {\"editor\"})"
+          + " @PgType public record Acct(java.util.UUID id) {}");
+      assertTrue(sql.contains("CREATE POLICY acct_select ON acct FOR SELECT\n  USING (false)"), () -> sql);
+      assertTrue(sql.contains("CREATE POLICY acct_update ON acct FOR UPDATE"), () -> sql);
+      assertTrue(sql.contains("g.relation IN ('editor')"), () -> sql);
+    }
+
+    @Test
+    void relationLiteralsAreSqlEscaped() throws IOException {
+      String sql = sqlFor("@AccessControlled(read = {\"o'brien\"})"
+          + " @PgType public record Acct(java.util.UUID id) {}");
+      assertTrue(sql.contains("g.relation IN ('o''brien')"), () -> sql);
     }
 
     @Test

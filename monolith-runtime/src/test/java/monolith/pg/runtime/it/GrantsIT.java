@@ -6,6 +6,7 @@
 package monolith.pg.runtime.it;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.lang.foreign.Arena;
@@ -58,8 +59,49 @@ class GrantsIT {
           WHERE d.resource = 'acl_patient' AND d.resource_id IN (id::text, '*') AND d.effect = 'deny'
             AND d.principal IN (SELECT current_setting('app.actor', true)
               UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true))));
+      DROP TABLE IF EXISTS acl_chart;
+      CREATE TABLE acl_chart (id uuid PRIMARY KEY, note text NOT NULL);
+      ALTER TABLE acl_chart ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE acl_chart FORCE ROW LEVEL SECURITY;
+      CREATE POLICY acl_chart_select ON acl_chart FOR SELECT
+        USING (
+          EXISTS (SELECT 1 FROM monolith_grant g
+            WHERE g.resource = 'acl_chart' AND g.resource_id IN (id::text, '*') AND g.effect = 'allow'
+              AND g.relation IN ('viewer', 'editor')
+              AND g.principal IN (SELECT current_setting('app.actor', true)
+                UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true)))
+          AND NOT EXISTS (SELECT 1 FROM monolith_grant d
+            WHERE d.resource = 'acl_chart' AND d.resource_id IN (id::text, '*') AND d.effect = 'deny'
+              AND d.relation IN ('viewer', 'editor')
+              AND d.principal IN (SELECT current_setting('app.actor', true)
+                UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true))));
+      CREATE POLICY acl_chart_insert ON acl_chart FOR INSERT
+        WITH CHECK (
+          EXISTS (SELECT 1 FROM monolith_grant g
+            WHERE g.resource = 'acl_chart' AND g.resource_id IN (id::text, '*') AND g.effect = 'allow'
+              AND g.relation IN ('editor')
+              AND g.principal IN (SELECT current_setting('app.actor', true)
+                UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true)))
+          AND NOT EXISTS (SELECT 1 FROM monolith_grant d
+            WHERE d.resource = 'acl_chart' AND d.resource_id IN (id::text, '*') AND d.effect = 'deny'
+              AND d.relation IN ('editor')
+              AND d.principal IN (SELECT current_setting('app.actor', true)
+                UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true))));
+      CREATE POLICY acl_chart_update ON acl_chart FOR UPDATE
+        USING (
+          EXISTS (SELECT 1 FROM monolith_grant g
+            WHERE g.resource = 'acl_chart' AND g.resource_id IN (id::text, '*') AND g.effect = 'allow'
+              AND g.relation IN ('editor')
+              AND g.principal IN (SELECT current_setting('app.actor', true)
+                UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true)))
+          AND NOT EXISTS (SELECT 1 FROM monolith_grant d
+            WHERE d.resource = 'acl_chart' AND d.resource_id IN (id::text, '*') AND d.effect = 'deny'
+              AND d.relation IN ('editor')
+              AND d.principal IN (SELECT current_setting('app.actor', true)
+                UNION ALL SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true))));
       CREATE ROLE monolith_acl_role LOGIN PASSWORD 'monolith';
       GRANT SELECT ON acl_patient TO monolith_acl_role;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON acl_chart TO monolith_acl_role;
       GRANT SELECT ON monolith_grant TO monolith_acl_role;
       GRANT SELECT ON monolith_role_member TO monolith_acl_role;""";
 
@@ -159,6 +201,29 @@ class GrantsIT {
   }
 
   @Test
+  @DisplayName("a read relation grants SELECT only; writing requires a write relation")
+  void relationSeparatesReadFromWrite() {
+    adminExec("DELETE FROM acl_chart");
+    adminExec("INSERT INTO acl_chart (id, note) VALUES ('" + P1 + "', 'chart1')");
+
+    // alice is a viewer: she may read the row but neither insert nor update it.
+    Grants.grant(admin, "alice", "acl_chart", P1, "viewer").getOrThrow();
+    assertEquals(1, asActor("alice", "SELECT count(*) FROM acl_chart"), "a viewer can read");
+    assertTrue(asActorExec("alice", "INSERT INTO acl_chart (id, note) VALUES ('" + P2 + "', 'x')").isFailure(),
+        "a viewer cannot insert: the write policy's WITH CHECK rejects it");
+    asActorExec("alice", "UPDATE acl_chart SET note = 'hacked' WHERE id = '" + P1 + "'");
+    assertEquals("chart1", adminText("SELECT note FROM acl_chart WHERE id = '" + P1 + "'"),
+        "a viewer's UPDATE matches no row under the write policy, so nothing changes");
+
+    // carol is an editor: she may read and write.
+    Grants.grant(admin, "carol", "acl_chart", P1, "editor").getOrThrow();
+    assertEquals(1, asActor("carol", "SELECT count(*) FROM acl_chart"), "an editor can also read");
+    assertTrue(asActorExec("carol", "UPDATE acl_chart SET note = 'edited' WHERE id = '" + P1 + "'").isSuccess(),
+        "an editor can write");
+    assertEquals("edited", adminText("SELECT note FROM acl_chart WHERE id = '" + P1 + "'"));
+  }
+
+  @Test
   @DisplayName("granting twice is idempotent")
   void grantingTwiceIsIdempotent() {
     Grants.grant(admin, "alice", "acl_patient", P1, "care_team").getOrThrow();
@@ -180,6 +245,23 @@ class GrantsIT {
       String value = Pg.textColumn(a, app, sql).getOrThrow().get(0);
       Pg.exec(a, app, "COMMIT").getOrThrow();
       return value;
+    }
+  }
+
+  /** Runs a write as {@code actor} in its own transaction, returning the result (success or failure). */
+  private static Result<Void> asActorExec(String actor, String sql) {
+    try (Arena a = Arena.ofConfined()) {
+      Pg.exec(a, app, "BEGIN").getOrThrow();
+      PgSession.actor(a, app, actor);
+      Result<Void> result = Pg.exec(a, app, sql);
+      Pg.exec(a, app, result.isSuccess() ? "COMMIT" : "ROLLBACK");
+      return result;
+    }
+  }
+
+  private static String adminText(String sql) {
+    try (Arena a = Arena.ofConfined()) {
+      return Pg.textColumn(a, admin, sql).getOrThrow().get(0);
     }
   }
 

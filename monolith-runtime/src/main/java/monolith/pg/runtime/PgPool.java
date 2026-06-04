@@ -86,19 +86,29 @@ public final class PgPool implements ConnectionSource {
   }
 
   private MemorySegment reset(MemorySegment conn) {
-    boolean healthy;
-    try (Arena a = Arena.ofConfined()) {
-      if (Pg.transactionStatus(conn) != Pg.PQTRANS_IDLE) {
-        Pg.exec(a, conn, "ROLLBACK");    // end an open or failed transaction before clearing the session
-      }
-      Pg.exec(a, conn, RESET_SESSION);   // clear session state, keeping prepared statements and plans
-      healthy = Pg.status(conn) == Pg.CONNECTION_OK;
-    }
-    if (healthy) return conn;
+    if (resetSucceeded(conn)) return conn;
     PreparedCache.forget(conn); // a reused address must not inherit the dead connection's plans
     Pg.finish(conn);
     replaced.incrementAndGet();
     return open();
+  }
+
+  /**
+   * Rolls back any open transaction and clears the session, returning whether the connection came back
+   * clean. A failed rollback or reset (not just a dead socket) is treated as connection death: the
+   * statement {@code Result} — not {@code PQstatus}, which only reports the socket is up — is the
+   * authority, so a connection that could not be cleaned is discarded rather than returned dirty.
+   */
+  private static boolean resetSucceeded(MemorySegment conn) {
+    boolean clean;
+    try (Arena a = Arena.ofConfined()) {
+      // Roll back first, but only when actually in a transaction; a failed rollback means we could not
+      // end the open/failed transaction, so the connection is not trustworthy and we skip the reset.
+      boolean rolledBack = Pg.transactionStatus(conn) == Pg.PQTRANS_IDLE
+          || Pg.exec(a, conn, "ROLLBACK").isSuccess();
+      clean = rolledBack && Pg.exec(a, conn, RESET_SESSION).isSuccess(); // keeps prepared plans
+    }
+    return clean;
   }
 
   public int replacedCount() {

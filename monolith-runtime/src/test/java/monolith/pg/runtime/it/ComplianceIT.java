@@ -59,7 +59,7 @@ class ComplianceIT {
       CREATE TABLE account_audit (
         audit_id bigserial PRIMARY KEY, logged_at timestamptz NOT NULL DEFAULT now(),
         actor text NOT NULL, action text NOT NULL, old_row jsonb, new_row jsonb);
-      CREATE OR REPLACE FUNCTION account_audit_record() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+      CREATE OR REPLACE FUNCTION account_audit_record() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
       BEGIN
         INSERT INTO account_audit (actor, action, old_row, new_row)
         VALUES (coalesce(current_setting('app.actor', true), 'unknown'), TG_OP,
@@ -152,6 +152,34 @@ class ComplianceIT {
         adminText("SELECT actor FROM account_audit WHERE action = 'INSERT' ORDER BY audit_id DESC LIMIT 1"));
     assertEquals("7",
         adminText("SELECT new_row->>'balance' FROM account_audit WHERE action = 'INSERT' ORDER BY audit_id DESC LIMIT 1"));
+  }
+
+  @Test
+  @DisplayName("the audit write resists a hostile search_path in the caller's session")
+  void auditResistsSearchPathHijack() {
+    // A decoy audit table in an attacker-controlled schema. A SECURITY DEFINER trigger function with no
+    // pinned search_path resolves its unqualified audit-table name through the *caller's* search_path,
+    // so a caller could redirect (and thus evade) the audit trail by putting a decoy schema first.
+    adminExec("DROP SCHEMA IF EXISTS evil CASCADE");
+    adminExec("CREATE SCHEMA evil");
+    adminExec("CREATE TABLE evil.account_audit (LIKE account_audit INCLUDING ALL)");
+    adminExec("GRANT USAGE ON SCHEMA evil TO monolith_app_role");
+    try {
+      inAppTransaction(() -> {
+        appExec("SET LOCAL search_path = evil, public").getOrThrow(); // hostile resolution order
+        PgSession.actor(ARENA, app, "dr.smith");
+        PgSession.tenant(ARENA, app, "acme");
+        appExec("INSERT INTO account (org, balance) VALUES ('acme', 11)").getOrThrow();
+      });
+
+      assertEquals("0", adminText("SELECT count(*) FROM evil.account_audit"),
+          "the audit row must not land in the attacker-controlled schema");
+      assertEquals("dr.smith", adminText("SELECT actor FROM account_audit"
+          + " WHERE action = 'INSERT' AND new_row->>'balance' = '11' ORDER BY audit_id DESC LIMIT 1"),
+          "the audit row must land in the real audit table regardless of the caller's search_path");
+    } finally {
+      adminExec("DROP SCHEMA IF EXISTS evil CASCADE");
+    }
   }
 
   @Test

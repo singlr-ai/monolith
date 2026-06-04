@@ -45,6 +45,14 @@ public final class PgBridge {
       }
       byte[] cell = cells[i];
       if (width[i] >= 0) {
+        if (cell.length != width[i]) {
+          // The SQL result's binary width for a fixed column must equal the declared layout width; a
+          // longer cell would overwrite later fields in the buffer. A mismatch means the @PgQuery record
+          // type does not match the actual SQL result type — fail loudly rather than corrupt the row.
+          throw new IllegalStateException("row " + row + " column " + i + ": expected a fixed-width cell of "
+              + width[i] + " bytes but got " + cell.length
+              + " (the @PgQuery record type does not match the SQL result type)");
+        }
         MemorySegment.copy(MemorySegment.ofArray(cell), 0, seg, off[i], cell.length);
       } else {
         seg.set(BE_INT, off[i], tail);

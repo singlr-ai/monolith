@@ -87,9 +87,12 @@ JDK fails fast with a clear message instead of cryptic compiler errors.
 build against a real Postgres with logical decoding:
 
 ```sh
-# Postgres 18 with wal_level=logical, e.g. via Docker:
-#   docker run -d --name monolith-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 \
-#     postgres:18 -c wal_level=logical
+# Postgres 18 with wal_level=logical, created exactly as CI does (see .github/workflows/ci.yml):
+# the monolith_test database and trust auth (password-free, as the conninfo below expects) are
+# set up by the container's own env vars, and wal_level=logical enables logical decoding.
+#   docker run -d --name monolith-pg \
+#     -e POSTGRES_DB=monolith_test -e POSTGRES_HOST_AUTH_METHOD=trust \
+#     -p 5432:5432 postgres:18 -c wal_level=logical
 MONOLITH_TEST_CONNINFO="host=localhost dbname=monolith_test user=postgres" \
   mvn -B -Pci clean verify
 ```

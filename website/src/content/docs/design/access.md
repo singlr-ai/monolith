@@ -90,9 +90,12 @@ CREATE POLICY patient_access ON patient USING (
         SELECT role FROM monolith_role_member WHERE actor = current_setting('app.actor', true))));
 ```
 
-- **Read vs write.** Separate policies per command (`FOR SELECT` vs `FOR INSERT/UPDATE/DELETE`), keyed
-  on read-granting relations (`viewer`, `care_team`) vs write-granting ones (`owner`, `editor`). The
-  relation-to-action map is part of `@AccessControlled`.
+- **Read vs write.** Set `@AccessControlled(read = {...}, write = {...})` to map relations to actions:
+  the codegen then emits a separate policy per command (`FOR SELECT` keyed on the read relations, e.g.
+  `viewer`/`care_team`; `FOR INSERT/UPDATE/DELETE` keyed on the write relations, e.g. `owner`/`editor`),
+  so a read-granting relation can never satisfy a write. An action with no relations is fail-closed, and
+  an empty `read`/`write` (the default) keeps the simpler relation-agnostic model — a single `FOR ALL`
+  policy where any `allow` grant authorizes every command.
 - **Fail-closed.** With `app.actor` unset, `current_setting(...,true)` is null, nothing matches, no
   rows. Same posture as `@Tenant`.
 - **Composition.** `@Tenant` and `@AccessControlled` both AND into effect: tenant isolation first, then

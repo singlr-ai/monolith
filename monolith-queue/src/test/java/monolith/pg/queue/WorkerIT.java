@@ -184,6 +184,38 @@ class WorkerIT {
   }
 
   @Test
+  @DisplayName("a source without a dedicated conninfo falls back to a pooled listener and still delivers")
+  void deliversWithPooledListenerFallback() {
+    enqueue("t", null, "m", 5);
+    // A composed, multi-database ConnectionSource (e.g. a ShardRouter or PgReplicaSet) exposes no
+    // dedicated conninfo, so the worker's lifelong LISTEN falls back to a pooled lease rather than a
+    // dedicated unpooled connection. Delivery (and clean shutdown) must still work over that fallback.
+    monolith.pg.runtime.ConnectionSource noDedicated = new monolith.pg.runtime.ConnectionSource() {
+      @Override public Result<MemorySegment> lease() {
+        return pool.lease();
+      }
+
+      @Override public void release(MemorySegment conn) {
+        pool.release(conn);
+      }
+
+      @Override public java.util.Optional<String> dedicatedConninfo() {
+        return java.util.Optional.empty(); // force the pooled-listener fallback path
+      }
+
+      @Override public void close() {
+        // the wrapped pool is owned and closed by the test, not by this view
+      }
+    };
+
+    try (Worker ignored = Queue.worker(noDedicated, "t")
+        .withPollInterval(Duration.ofMillis(50)).withLease(Duration.ofSeconds(30))
+        .onMessage((c, m) -> Result.success(null)).start()) {
+      awaitUntil(() -> count("status = 'succeeded'") == 1, "delivered via the pooled-listener fallback");
+    }
+  }
+
+  @Test
   @DisplayName("close returns promptly even when the pool has no spare connection for a wake")
   void closeDoesNotBlockOnAnExhaustedPool() {
     try (PgPool tiny = new PgPool(CONNINFO, 1, Duration.ofSeconds(30))) {

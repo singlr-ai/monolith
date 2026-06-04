@@ -57,7 +57,7 @@ class TxIT {
   @BeforeEach
   void clean() {
     assumeTrue(available, "no Postgres reachable at " + CONNINFO);
-    exec("DROP TABLE IF EXISTS tx_ok, tx_rb, tx_retry, tx_deferred");
+    exec("DROP TABLE IF EXISTS tx_ok, tx_rb, tx_retry, tx_deferred, tx_throw");
   }
 
   @Test
@@ -79,6 +79,24 @@ class TxIT {
 
     assertTrue(assertInstanceOf(Result.Failure.class, result).error().contains("said no"));
     assertFalse(tableExists("tx_rb"), "the work's writes were rolled back");
+  }
+
+  @Test
+  @DisplayName("rolls back and propagates when the work throws, leaving no open transaction")
+  void rollsBackWhenWorkThrows() {
+    var boom = new RuntimeException("the handler blew up");
+    RuntimeException thrown = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+        () -> Tx.tx(conn, c -> {
+          execIn(c, "CREATE TABLE tx_throw (id int)").getOrThrow(); // happens inside the transaction
+          throw boom;
+        }));
+
+    org.junit.jupiter.api.Assertions.assertSame(boom, thrown, "the original exception propagates");
+    try (Arena a = Arena.ofConfined()) {
+      assertEquals(Pg.PQTRANS_IDLE, Pg.transactionStatus(conn),
+          "a thrown unit of work must be rolled back, leaving the connection idle and reusable");
+    }
+    assertFalse(tableExists("tx_throw"), "the thrown work's writes were rolled back");
   }
 
   @Test

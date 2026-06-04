@@ -610,7 +610,8 @@ public final class PgTypeProcessor extends AbstractProcessor {
       // Access control owns the policies so it can compose tenant isolation as RESTRICTIVE (AND),
       // since two PERMISSIVE policies would OR.
       String resource = access.resource().isEmpty() ? pgName : access.resource();
-      appendAccessRls(b, pgName, resource, snake(access.id()), tenant, access.where());
+      appendAccessRls(b, pgName, resource, snake(access.id()), tenant, access.where(),
+          List.of(access.read()), List.of(access.write()));
     } else if (tenant != null) {
       appendTenantRls(b, pgName, tenant);
     }
@@ -640,16 +641,33 @@ public final class PgTypeProcessor extends AbstractProcessor {
    * The grant and role tables come from {@code Grants.install}.
    */
   private static void appendAccessRls(
-      StringBuilder b, String table, String resource, String idCol, Field tenant, String where) {
-    String grant = accessPredicate(resource, idCol);
-    String predicate = where.isEmpty() ? grant : "(" + where + ")\n    AND " + grant;
+      StringBuilder b, String table, String resource, String idCol, Field tenant, String where,
+      List<String> read, List<String> write) {
     b.append("\n-- Access control: forced row-level security keyed on grants for resource '")
         .append(sqlLiteral(resource).replaceAll("\\s+", " ")) // single-line, can't break out of the -- comment
         .append("'. Requires the tables from Grants.install.\n");
     b.append("ALTER TABLE ").append(table).append(" ENABLE ROW LEVEL SECURITY;\n");
     b.append("ALTER TABLE ").append(table).append(" FORCE ROW LEVEL SECURITY;\n");
-    b.append("CREATE POLICY ").append(table).append("_access ON ").append(table)
-        .append("\n  USING (").append(predicate).append(")\n  WITH CHECK (").append(predicate).append(");\n");
+    if (read.isEmpty() && write.isEmpty()) {
+      // Relation-agnostic: a single FOR ALL policy where any allow grant authorizes every command.
+      String predicate = withWhere(where, accessPredicate(resource, idCol, List.of()));
+      b.append("CREATE POLICY ").append(table).append("_access ON ").append(table)
+          .append("\n  USING (").append(predicate).append(")\n  WITH CHECK (").append(predicate).append(");\n");
+    } else {
+      // Relation-aware: one policy per command, so a relation only authorizes its mapped action — a
+      // read-granting relation cannot satisfy a write. An action with no relations is fail-closed.
+      String readPredicate = commandPredicate(where, resource, idCol, read);
+      String writePredicate = commandPredicate(where, resource, idCol, write);
+      b.append("CREATE POLICY ").append(table).append("_select ON ").append(table)
+          .append(" FOR SELECT\n  USING (").append(readPredicate).append(");\n");
+      b.append("CREATE POLICY ").append(table).append("_insert ON ").append(table)
+          .append(" FOR INSERT\n  WITH CHECK (").append(writePredicate).append(");\n");
+      b.append("CREATE POLICY ").append(table).append("_update ON ").append(table)
+          .append(" FOR UPDATE\n  USING (").append(writePredicate).append(")")
+          .append("\n  WITH CHECK (").append(writePredicate).append(");\n");
+      b.append("CREATE POLICY ").append(table).append("_delete ON ").append(table)
+          .append(" FOR DELETE\n  USING (").append(writePredicate).append(");\n");
+    }
     if (tenant != null) {
       String match = snake(tenant.name()) + " = current_setting('app.tenant', true)::" + tenant.pgType();
       b.append("-- Tenant isolation as RESTRICTIVE, so a row must both belong to the tenant and be granted.\n");
@@ -658,20 +676,46 @@ public final class PgTypeProcessor extends AbstractProcessor {
     }
   }
 
-  /** The allow-and-not-deny predicate over the grant tables for {@code resource}, keyed on {@code idCol}. */
-  private static String accessPredicate(String resource, String idCol) {
+  /** The attribute condition (if any) AND-ed onto the grant {@code predicate}. */
+  private static String withWhere(String where, String predicate) {
+    return where.isEmpty() ? predicate : "(" + where + ")\n    AND " + predicate;
+  }
+
+  /**
+   * A single command's policy predicate. When the command has no granting relations it is fail-closed
+   * ({@code false}); otherwise it is the grant check (with the attribute condition AND-ed in).
+   */
+  private static String commandPredicate(String where, String resource, String idCol, List<String> relations) {
+    return relations.isEmpty() ? "false" : withWhere(where, accessPredicate(resource, idCol, relations));
+  }
+
+  /**
+   * The allow-and-not-deny predicate over the grant tables for {@code resource}, keyed on {@code idCol}.
+   * When {@code relations} is non-empty, both the allow and the deny checks are scoped to those relations,
+   * so a grant (or deny) only counts for the action its relation is mapped to.
+   */
+  private static String accessPredicate(String resource, String idCol, List<String> relations) {
     String res = sqlLiteral(resource);
     String principals = "(SELECT current_setting('app.actor', true)\n"
         + "        UNION ALL SELECT role FROM monolith_role_member"
         + " WHERE actor = current_setting('app.actor', true))";
+    String allowRelation = relations.isEmpty() ? "" : " AND g.relation IN (" + relationList(relations) + ")";
+    String denyRelation = relations.isEmpty() ? "" : " AND d.relation IN (" + relationList(relations) + ")";
     return "EXISTS (SELECT 1 FROM monolith_grant g\n"
         + "      WHERE g.resource = '" + res + "' AND g.resource_id IN (" + idCol + "::text, '*')"
-        + " AND g.effect = 'allow'\n"
+        + " AND g.effect = 'allow'" + allowRelation + "\n"
         + "        AND g.principal IN " + principals + ")\n"
         + "    AND NOT EXISTS (SELECT 1 FROM monolith_grant d\n"
         + "      WHERE d.resource = '" + res + "' AND d.resource_id IN (" + idCol + "::text, '*')"
-        + " AND d.effect = 'deny'\n"
+        + " AND d.effect = 'deny'" + denyRelation + "\n"
         + "        AND d.principal IN " + principals + ")";
+  }
+
+  /** Comma-separated, SQL-escaped relation literals for an {@code IN (...)} list. */
+  private static String relationList(List<String> relations) {
+    return relations.stream()
+        .map(r -> "'" + sqlLiteral(r) + "'")
+        .collect(java.util.stream.Collectors.joining(", "));
   }
 
   /** Escapes a value for embedding inside a single-quoted SQL string literal (doubles each quote). */
@@ -716,8 +760,11 @@ public final class PgTypeProcessor extends AbstractProcessor {
         .append("  new_row   jsonb\n);\n");
     // SECURITY DEFINER: the trigger writes the audit row as the (privileged) owner, so the
     // application role needs no direct access to the audit table and cannot forge entries.
+    // SET search_path FROM CURRENT pins the function's name resolution to the schema set in effect when
+    // the DDL is applied (the same one the audit table is created in), so a caller cannot redirect the
+    // unqualified audit-table reference to a decoy schema — the classic SECURITY DEFINER escalation.
     b.append("CREATE FUNCTION ").append(table).append("_audit_record() RETURNS trigger\n")
-        .append("  LANGUAGE plpgsql SECURITY DEFINER AS $$\nBEGIN\n")
+        .append("  LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$\nBEGIN\n")
         .append("  INSERT INTO ").append(table).append("_audit (actor, action, old_row, new_row)\n")
         .append("  VALUES (coalesce(current_setting('app.actor', true), 'unknown'), TG_OP,\n")
         .append("          to_jsonb(OLD), to_jsonb(NEW));\n  RETURN NULL;\nEND $$;\n");

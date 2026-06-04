@@ -59,6 +59,33 @@ class MessageTest {
   }
 
   @Test
+  @DisplayName("a topic that is not an identifier-safe channel name is rejected at construction")
+  void rejectsUnsafeTopic() {
+    // A topic becomes part of a LISTEN channel identifier; anything that could break out of the quoted
+    // identifier (a quote, a semicolon, whitespace) or overrun the 63-byte channel limit must be rejected.
+    for (String bad : java.util.List.of(
+        "evil\"; DROP TABLE monolith_queue; --",
+        "has space",
+        "quote\"inside",
+        "a".repeat(49))) {
+      assertThrows(IllegalArgumentException.class,
+          () -> Message.builder().withTopic(bad).withPayload(new byte[0]).build(),
+          "should reject unsafe topic: " + bad);
+    }
+    // The same boundary holds at the worker entry point, before any connection is touched.
+    assertThrows(IllegalArgumentException.class,
+        () -> monolith.pg.queue.Queue.worker(null, "evil\"; --"));
+  }
+
+  @Test
+  @DisplayName("identifier-safe topics with dots, dashes, and underscores are accepted")
+  void acceptsSafeTopics() {
+    for (String ok : java.util.List.of("eligibility", "claims.v2", "patient-events", "t", "a".repeat(48))) {
+      assertEquals(ok, Message.builder().withTopic(ok).withPayload(new byte[0]).build().topic());
+    }
+  }
+
+  @Test
   @DisplayName("a null payload is rejected")
   void rejectsNullPayload() {
     assertThrows(NullPointerException.class, () -> Message.builder().withTopic("t").build());

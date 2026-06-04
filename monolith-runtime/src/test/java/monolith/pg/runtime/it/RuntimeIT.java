@@ -122,6 +122,23 @@ class RuntimeIT {
   }
 
   @Test
+  @DisplayName("a failed connect returns a failure and finishes the connection (no native leak)")
+  void failedConnectIsAFailure() {
+    // A database that does not exist: the handshake fails, so connect must return a failure and call
+    // PQfinish on the failed PGconn. Repeating it would leak native memory if the failure path forgot
+    // to finish the connection (libpq requires PQfinish even for a failed connection object).
+    String badConninfo = "host=localhost dbname=monolith_no_such_db_" + UUID.randomUUID()
+        .toString().replace("-", "") + " user=" + System.getProperty("user.name");
+    for (int i = 0; i < 200; i++) {
+      try (Arena a = Arena.ofConfined()) {
+        Result<MemorySegment> r = Pg.connect(a, badConninfo);
+        assertTrue(r.isFailure(), "connecting to a missing database must fail");
+        assertTrue(((Result.Failure<MemorySegment>) r).error().contains("connect failed"));
+      }
+    }
+  }
+
+  @Test
   @DisplayName("textColumn returns column zero of every row")
   void textColumnReadsValues() {
     insertBox("EU");
@@ -130,6 +147,26 @@ class RuntimeIT {
       Result<List<String>> r = Pg.textColumn(a, admin, "SELECT region FROM boxes ORDER BY region");
       assertTrue(r.isSuccess());
       assertEquals(List.of("EU", "US"), r.getOrThrow());
+    }
+  }
+
+  @Test
+  @DisplayName("PgBridge rejects a fixed cell whose width does not match the declared layout")
+  void bridgeRejectsFixedWidthMismatch() {
+    try (Arena a = Arena.ofConfined()) {
+      var p = PgParam.bind(a, 42); // one int4 column -> a 4-byte binary cell
+      MemorySegment res = Pg.execParamsBinary(a, admin, "SELECT $1::int4",
+          p.values(), p.lengths(), p.formats()).getOrThrow();
+      try {
+        // Correct declared width (4) repacks fine.
+        assertEquals(5, monolith.pg.runtime.PgBridge.row(res, 0, 5, new int[] {1}, new int[] {4}).length);
+        // A wrong declared width (2) for that fixed column must fail loudly, not silently corrupt.
+        var ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> monolith.pg.runtime.PgBridge.row(res, 0, 5, new int[] {1}, new int[] {2}));
+        assertTrue(ex.getMessage().contains("column 0"), ex.getMessage());
+      } finally {
+        Pg.clear(res);
+      }
     }
   }
 
@@ -209,6 +246,26 @@ class RuntimeIT {
       pool.release(c); // reset fails on the dead backend -> replace
       assertEquals(1, pool.replacedCount());
       pool.release(pool.lease().getOrThrow()); // pool is healthy again
+    }
+  }
+
+  @Test
+  @DisplayName("a connection whose rollback fails on a dead backend is discarded, not returned dirty")
+  void poolDiscardsWhenRollbackFails() {
+    try (PgPool pool = new PgPool(CONNINFO, 1)) {
+      MemorySegment c = pool.lease().getOrThrow();
+      try (Arena a = Arena.ofConfined()) {
+        Pg.exec(a, c, "BEGIN").getOrThrow();
+        Pg.exec(a, c, "CREATE TEMP TABLE rb_dead (x int)").getOrThrow(); // leaves the conn in a transaction
+        int pid = Integer.parseInt(Pg.textColumn(a, c, "SELECT pg_backend_pid()").getOrThrow().get(0));
+        Pg.exec(a, admin, "SELECT pg_terminate_backend(" + pid + ")").getOrThrow();
+      }
+      // The reset sees an open transaction and issues ROLLBACK, but the backend is gone, so the rollback
+      // fails. A failed reset must be treated as connection death and the connection discarded — not
+      // returned to the pool with leftover transaction state (status alone would call it CONNECTION_OK).
+      pool.release(c);
+      assertEquals(1, pool.replacedCount(), "a failed rollback must discard the connection");
+      pool.release(pool.lease().getOrThrow()); // the pool replaced it and is usable again
     }
   }
 

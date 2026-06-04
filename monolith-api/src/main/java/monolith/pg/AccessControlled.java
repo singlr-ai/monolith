@@ -35,6 +35,23 @@ public @interface AccessControlled {
   String id() default "id";
 
   /**
+   * Relations that grant <b>read</b> ({@code SELECT}), for example {@code {"viewer", "care_team"}}. When
+   * {@link #read} or {@link #write} is non-empty the codegen emits command-specific policies
+   * ({@code FOR SELECT} vs {@code FOR INSERT/UPDATE/DELETE}) so a grant only authorizes the action its
+   * relation is mapped to — a {@code viewer} can read but not write. Each command's policy matches an
+   * {@code allow} grant whose {@code relation} is in the corresponding set (and no such {@code deny}).
+   *
+   * <p>An action whose relation set is empty is <b>fail-closed</b>: with {@code read} empty no grant can
+   * read, with {@code write} empty no grant can write. Leaving <em>both</em> empty (the default) keeps the
+   * simpler relation-agnostic model: a single {@code FOR ALL} policy where any {@code allow} grant,
+   * regardless of relation, authorizes every command.
+   */
+  String[] read() default {};
+
+  /** Relations that grant <b>write</b> ({@code INSERT}, {@code UPDATE}, {@code DELETE}). See {@link #read}. */
+  String[] write() default {};
+
+  /**
    * An optional attribute condition AND-ed into the policy, a SQL boolean over this type's own columns
    * (by their generated snake_case names) and {@code current_setting(...)}, for example
    * {@code "status <> 'archived'"} or {@code "region = current_setting('app.region', true)"}. It is
