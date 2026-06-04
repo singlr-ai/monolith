@@ -5,6 +5,7 @@
 
 package monolith.pg.reactive;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -109,7 +110,7 @@ class ReactiveFaultIT {
       assertTrue(awaitAtLeast(fires, 1, 5000), "the feed should deliver before the fault");
       int before = fires.get();
 
-      killWalsender(); // the slot survives, so the reconnect resumes by replay
+      killWalsender(admin); // the slot survives, so the reconnect resumes by replay
 
       insert();
       assertTrue(awaitAtLeast(fires, before + 1, 20000),
@@ -132,14 +133,15 @@ class ReactiveFaultIT {
     hub.subscribe("FaultEvents", "all", fires::incrementAndGet);
 
     Invalidator invalidator = new Invalidator(CONNINFO, hub, SLOT);
+    MemorySegment faultConn = Pg.connect(ARENA, CONNINFO).getOrThrow(); // the fault thread's own connection
     var faulting = new AtomicBoolean(true);
     // Relentlessly kill the walsender and drop the slot, so the Invalidator can never resume by replay
     // and is forced down the lost-slot path (recreate + re-query) at least once. Deterministic: the slot
     // is dropped every cycle, so some reconnect must find it missing.
     Thread faultThread = Thread.ofPlatform().start(() -> {
       while (faulting.get()) {
-        killWalsender();
-        dropSlotIfInactive();
+        killWalsender(faultConn);
+        dropSlotIfInactive(faultConn);
         sleepQuietly(20);
       }
     });
@@ -156,9 +158,44 @@ class ReactiveFaultIT {
     } finally {
       faulting.set(false);
       faultThread.join();
+      Pg.finish(faultConn);
       invalidator.close();
       pool.close();
     }
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  @DisplayName("closing during a reconnect storm drops the slot and leaves no leak")
+  void closeDuringAReconnectStormLeavesNoLeak() throws InterruptedException {
+    PgPool pool = new PgPool(CONNINFO, 2);
+    ReactiveHub hub = new ReactiveHub(pool, List.of(eventsRule()));
+    hub.subscribe("FaultEvents", "all", () -> { });
+
+    Invalidator invalidator = new Invalidator(CONNINFO, hub, SLOT);
+    MemorySegment faultConn = Pg.connect(ARENA, CONNINFO).getOrThrow();
+    var churning = new AtomicBoolean(true);
+    // Keep the stream dropping so the loop is reconnecting when close() lands: the race that used to let
+    // a late reconnect resurrect the slot after close() had dropped it, leaking a WAL-retaining slot.
+    Thread churn = Thread.ofPlatform().start(() -> {
+      while (churning.get()) {
+        killWalsender(faultConn);
+        sleepQuietly(25);
+      }
+    });
+    try {
+      assertTrue(awaitEvent(reconnectedWithGap(false), 20000), "the feed should be actively reconnecting");
+      invalidator.close(); // close mid-reconnect: the loop thread must drop its own slot, no race, no leak
+    } finally {
+      churning.set(false);
+      churn.join();
+      Pg.finish(faultConn);
+      pool.close();
+    }
+
+    assertFalse(slotExists(),
+        "close() must drop the slot even under a reconnect storm: a leaked slot retains WAL without bound");
+    assertFalse(publicationExists(), "close() must drop the publication too");
   }
 
   private Predicate<ReactiveEvent> reconnectedWithGap(boolean gap) {
@@ -171,21 +208,35 @@ class ReactiveFaultIT {
     }
   }
 
-  private static void killWalsender() {
+  private static void killWalsender(MemorySegment conn) {
     try (Arena a = Arena.ofConfined()) {
-      Pg.exec(a, admin, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots"
+      Pg.exec(a, conn, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots"
           + " WHERE slot_name = '" + SLOT + "' AND active_pid IS NOT NULL");
     } catch (RuntimeException ignore) {
       // the slot may not exist this instant (just dropped); the next cycle retries
     }
   }
 
-  private static void dropSlotIfInactive() {
+  private static void dropSlotIfInactive(MemorySegment conn) {
     try (Arena a = Arena.ofConfined()) {
-      Pg.exec(a, admin, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
+      Pg.exec(a, conn, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots"
           + " WHERE slot_name = '" + SLOT + "' AND active_pid IS NULL");
     } catch (RuntimeException ignore) {
       // the slot may be active or already gone; the next cycle retries
+    }
+  }
+
+  private static boolean slotExists() {
+    return count("SELECT count(*) FROM pg_replication_slots WHERE slot_name = '" + SLOT + "'") > 0;
+  }
+
+  private static boolean publicationExists() {
+    return count("SELECT count(*) FROM pg_publication WHERE pubname = '" + SLOT + "_pub'") > 0;
+  }
+
+  private static int count(String sql) {
+    try (Arena a = Arena.ofConfined()) {
+      return Integer.parseInt(Pg.textColumn(a, admin, sql).getOrThrow().get(0));
     }
   }
 

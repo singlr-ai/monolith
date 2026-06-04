@@ -19,41 +19,65 @@ import monolith.pg.runtime.WalStream;
  * change to the hub as it arrives (sub-poll-interval latency), with built-in backpressure, if a
  * subscriber callback is slow the drain pauses and TCP flow control pauses the server.
  *
+ * <p>A libpq connection is single-threaded, so the loop thread is the <em>sole</em> owner of the
+ * replication connection and the slot for the whole lifecycle, including teardown: it opens, reconnects,
+ * and finally drops the slot itself. {@link #close()} only signals the loop and waits for it, so no
+ * connection is ever touched by two threads and a reconnect in flight cannot resurrect a slot that is
+ * being dropped (a leaked slot retains WAL without bound, the highest-severity operational risk).
+ *
  * <p>Requires {@code wal_level = logical}. Close it to stop streaming and drop the slot.
  */
 public final class Invalidator implements AutoCloseable {
 
+  /** Bounds every connect the loop makes, so a server outage cannot wedge reconnect or shutdown. */
+  private static final int CONNECT_TIMEOUT_SECONDS = 5;
+
+  /** Upper bound on how long {@link #close()} waits for the loop to stop and drop the slot. */
+  private static final long SHUTDOWN_JOIN_MILLIS = 15_000;
+
   private final String conninfo;
   private final String slot;
   private final ReactiveHub hub;
-  private volatile WalStream stream; // replaced on reconnect; only the loop thread reassigns it
+  private volatile WalStream stream; // owned by the loop thread; null between a drop and a reconnect
   private final Thread thread;
   private volatile boolean running = true;
 
   public Invalidator(String conninfo, ReactiveHub hub, String slot) {
-    this.conninfo = conninfo;
+    this.conninfo = withConnectTimeout(conninfo);
     this.hub = hub;
     this.slot = slot;
     try (Arena a = Arena.ofConfined()) {
-      MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
-      Wal.recreate(admin, slot);
-      Pg.finish(admin);
+      MemorySegment admin = Pg.connect(a, this.conninfo).getOrThrow();
+      try {
+        Wal.recreate(admin, slot);
+      } finally {
+        Pg.finish(admin);
+      }
     }
-    this.stream = new WalStream(conninfo, slot);
+    try {
+      this.stream = new WalStream(this.conninfo, slot);
+    } catch (RuntimeException cannotStream) {
+      dropSlot(); // created the slot but cannot stream from it: do not leak it
+      throw cannotStream;
+    }
     this.thread = Thread.ofPlatform().name("monolith-wal-" + slot).daemon(true).start(this::loop);
   }
 
   private void loop() {
-    while (running) {
-      try {
-        stream.poll(200, hub::apply); // event-driven; blocks on the replication socket
-        stream.confirm();              // advance the slot (release WAL)
-      } catch (RuntimeException e) {
-        if (running) {
-          Observability.emit(new ReactiveEvent.StreamDropped(slot, e.getMessage()));
-          reconnect();
+    try {
+      while (running) {
+        try {
+          stream.poll(200, hub::apply); // event-driven; blocks on the replication socket
+          stream.confirm();              // advance the slot (release WAL)
+        } catch (RuntimeException e) {
+          if (running) {
+            Observability.emit(new ReactiveEvent.StreamDropped(slot, e.getMessage()));
+            reconnect();
+          }
         }
       }
+    } finally {
+      teardown(); // the loop thread drops its own slot, so close() never has to touch it
     }
   }
 
@@ -99,15 +123,41 @@ public final class Invalidator implements AutoCloseable {
     }
   }
 
-  private void closeStreamQuietly() {
-    try {
-      stream.close();
-    } catch (RuntimeException ignore) {
-      // the connection is already dead; nothing more to release
+  /** Final teardown, run on the loop thread once the loop exits: close the stream, drop the slot. */
+  private void teardown() {
+    closeStreamQuietly();
+    dropSlot();
+  }
+
+  /** Drop the slot and its publication, best effort: shutdown must not fail because the server is down. */
+  private void dropSlot() {
+    try (Arena a = Arena.ofConfined()) {
+      MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
+      try {
+        Wal.drop(admin, slot);
+      } finally {
+        Pg.finish(admin);
+      }
+    } catch (RuntimeException unreachableAtShutdown) {
+      // the server is down: the orphaned slot is reclaimed by max_slot_wal_keep_size or
+      // Wal.dropInactive. We must not throw, or close() would fail because the database is unreachable.
     }
   }
 
-  /** Sleep for the backoff; return false if interrupted (the Invalidator is closing). */
+  /** Close the current stream and forget it, so teardown after an interrupted reconnect cannot double-close. */
+  private void closeStreamQuietly() {
+    WalStream current = stream;
+    stream = null;
+    if (current != null) {
+      try {
+        current.close();
+      } catch (RuntimeException alreadyDead) {
+        // the connection is already gone; nothing more to release
+      }
+    }
+  }
+
+  /** Sleep for the backoff; return false if interrupted or closing (the Invalidator is stopping). */
   private boolean sleep(long ms) {
     try {
       Thread.sleep(ms);
@@ -118,20 +168,26 @@ public final class Invalidator implements AutoCloseable {
     }
   }
 
+  /**
+   * Append a bounded connect timeout to the connection string (keyword format, which the reactive layer
+   * already assumes, since {@link WalStream} appends {@code replication=database}), unless the caller set
+   * one. This is what lets the loop exit, and {@link #close()} return, promptly even mid-reconnect to a
+   * server that is down.
+   */
+  private static String withConnectTimeout(String conninfo) {
+    return conninfo.contains("connect_timeout")
+        ? conninfo
+        : conninfo + " connect_timeout=" + CONNECT_TIMEOUT_SECONDS;
+  }
+
   @Override
   public void close() {
     running = false;
-    thread.interrupt();
+    thread.interrupt(); // break the reconnect backoff; native calls end on their own connect timeout
     try {
-      thread.join(1000);
+      thread.join(SHUTDOWN_JOIN_MILLIS); // the loop drops the slot in its finally; just wait for it
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-    stream.close();
-    try (Arena a = Arena.ofConfined()) {
-      MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
-      Wal.drop(admin, slot);
-      Pg.finish(admin);
     }
   }
 }
