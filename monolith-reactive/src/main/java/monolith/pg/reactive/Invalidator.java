@@ -123,24 +123,49 @@ public final class Invalidator implements AutoCloseable {
     }
   }
 
-  /** Final teardown, run on the loop thread once the loop exits: close the stream, drop the slot. */
+  /** Final teardown on the loop thread once the loop exits: close the stream and drop the slot reliably. */
   private void teardown() {
+    Thread.interrupted(); // clear the interrupt close() set, so the cleanup retries below can pause
     closeStreamQuietly();
     dropSlot();
   }
 
-  /** Drop the slot and its publication, best effort: shutdown must not fail because the server is down. */
+  /**
+   * Drop the slot and its publication, reliably but best effort. The server releases the slot
+   * asynchronously after {@link #closeStreamQuietly} ends the stream, and the publication drop can lose
+   * a brief lock race with the detaching walsender, so retry until both are gone (a leaked slot retains
+   * WAL). Give up quietly if the server is unreachable: the orphan is then reclaimed by
+   * {@code max_slot_wal_keep_size} or {@link Wal#dropInactive}, and shutdown must not fail on a down DB.
+   */
   private void dropSlot() {
     try (Arena a = Arena.ofConfined()) {
       MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
       try {
-        Wal.drop(admin, slot);
+        for (int attempt = 0; attempt < 30; attempt++) { // ~3s, as the walsender finishes detaching
+          try {
+            Wal.drop(admin, slot);
+            return; // slot and publication both gone
+          } catch (RuntimeException settling) {
+            if (!pause(100)) return; // interrupted: give up, best effort
+          }
+        }
       } finally {
         Pg.finish(admin);
       }
     } catch (RuntimeException unreachableAtShutdown) {
       // the server is down: the orphaned slot is reclaimed by max_slot_wal_keep_size or
       // Wal.dropInactive. We must not throw, or close() would fail because the database is unreachable.
+    }
+  }
+
+  /** Uninterruptible pause for the teardown retries; returns false if interrupted. */
+  private static boolean pause(long ms) {
+    try {
+      Thread.sleep(ms);
+      return true;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
     }
   }
 
