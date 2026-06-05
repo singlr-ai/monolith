@@ -59,11 +59,11 @@ class ComplianceIT {
       CREATE TABLE account_audit (
         audit_id bigserial PRIMARY KEY, logged_at timestamptz NOT NULL DEFAULT now(),
         actor text NOT NULL, action text NOT NULL, old_row jsonb, new_row jsonb);
-      CREATE OR REPLACE FUNCTION account_audit_record() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+      CREATE OR REPLACE FUNCTION account_audit_record() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
       BEGIN
-        INSERT INTO account_audit (actor, action, old_row, new_row)
-        VALUES (coalesce(current_setting('app.actor', true), 'unknown'), TG_OP,
-                to_jsonb(OLD), to_jsonb(NEW));
+        EXECUTE format('INSERT INTO %I.%I (actor, action, old_row, new_row) VALUES ($1, $2, $3, $4)',
+                       TG_TABLE_SCHEMA, TG_TABLE_NAME || '_audit')
+          USING coalesce(current_setting('app.actor', true), 'unknown'), TG_OP, to_jsonb(OLD), to_jsonb(NEW);
         RETURN NULL;
       END $$;
       CREATE TRIGGER account_audit_write AFTER INSERT OR UPDATE OR DELETE ON account
@@ -180,6 +180,27 @@ class ComplianceIT {
     } finally {
       adminExec("DROP SCHEMA IF EXISTS evil CASCADE");
     }
+  }
+
+  @Test
+  @DisplayName("the audit write resists a pg_temp decoy of the audit table")
+  void auditResistsPgTempShadowing() {
+    inAppTransaction(() -> {
+      // A temporary table in the caller's own pg_temp schema, shadowing the audit table by name. pg_temp
+      // is searched before the schema search path for relations, so an unqualified audit insert in a
+      // SECURITY DEFINER function would land here — evading the real, immutable audit trail.
+      appExec("CREATE TEMP TABLE account_audit (LIKE public.account_audit INCLUDING ALL) ON COMMIT DROP")
+          .getOrThrow();
+      PgSession.actor(ARENA, app, "dr.house");
+      PgSession.tenant(ARENA, app, "acme");
+      appExec("INSERT INTO account (org, balance) VALUES ('acme', 17)").getOrThrow();
+      assertEquals("0", appText("SELECT count(*) FROM pg_temp.account_audit"),
+          "the audit row must not land in the caller's temp decoy");
+    });
+
+    assertEquals("dr.house", adminText("SELECT actor FROM account_audit"
+        + " WHERE action = 'INSERT' AND new_row->>'balance' = '17' ORDER BY audit_id DESC LIMIT 1"),
+        "the audit row must land in the real audit table even against a pg_temp decoy");
   }
 
   @Test

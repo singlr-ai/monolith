@@ -69,7 +69,8 @@ public final class PgTypeProcessor extends AbstractProcessor {
   /** One record component, resolved to its wire kind, offset, and nullability. */
   private record Field(
       int ordinal, String name, String pgType, Kind kind, int width,
-      int headerOffset, String javaType, boolean nullable, boolean encrypted, boolean tenant) {}
+      int headerOffset, String javaType, boolean nullable, boolean encrypted, boolean tenant,
+      String table) {}
 
   /** Accumulated across rounds; the aggregate schema.lock is written at the end. */
   private final List<String> lockEntries = new ArrayList<>();
@@ -164,8 +165,8 @@ public final class PgTypeProcessor extends AbstractProcessor {
       // an encrypted field is a variable-length bytea on the wire; the Java type stays String.
       String pgType = encrypted ? "bytea" : m.pgType;
       int headerWidth = m.kind == Kind.FIXED ? m.width : 8; // var: int4 off + int4 len
-      fields.add(new Field(
-          ordinal, comp, pgType, m.kind, m.width, offset, type, isNullable(c, name), encrypted, tenant));
+      fields.add(new Field(ordinal, comp, pgType, m.kind, m.width, offset, type,
+          isNullable(c, name), encrypted, tenant, pgName));
       offset += headerWidth;
       ordinal++;
     }
@@ -182,6 +183,12 @@ public final class PgTypeProcessor extends AbstractProcessor {
               "@AccessControlled id '" + access.id() + "' is not a component of " + name);
         }
         validateWhere(access.where());
+        if (access.read().length == 0 && access.write().length == 0 && !access.relationAgnostic()) {
+          throw new IllegalArgumentException("@AccessControlled on " + name
+              + " is fail-closed by default: declare read/write relations (e.g. read = {\"viewer\"},"
+              + " write = {\"editor\"}) so a read relation cannot authorize a write, or set"
+              + " relationAgnostic = true to opt into the coarse 'any grant is full access' model");
+        }
       }
       emitSql(pgName, fields, record.getAnnotation(Audited.class) != null, access);
     }
@@ -341,7 +348,7 @@ public final class PgTypeProcessor extends AbstractProcessor {
   private static String readerAccessor(Field f) {
     int o = f.headerOffset();
     String decode = f.encrypted()
-        ? varDecode(o, "monolith.pg.runtime.PgCrypto.decrypt(_raw)") // decrypt on read
+        ? varDecode(o, "monolith.pg.runtime.PgCrypto.decrypt(_raw, " + cryptoContext(f) + ")") // decrypt on read
         : switch (f.javaType()) {
       case "java.util.UUID" ->
           "return new UUID(seg.get(BE_LONG, %d), seg.get(BE_LONG, %d));".formatted(o, o + 8);
@@ -391,6 +398,15 @@ public final class PgTypeProcessor extends AbstractProcessor {
     return "  public %s %s() {\n    %s\n  }\n\n".formatted(returnType, f.name(), decode);
   }
 
+  /**
+   * The Java string literal for an encrypted field's AAD context — {@code "table.column"} — passed to
+   * {@code PgCrypto.encrypt/decrypt} so the ciphertext is bound to the field it lives in and cannot be
+   * substituted from another row/column or table.
+   */
+  private static String cryptoContext(Field f) {
+    return "\"" + javaStringLiteral(f.table() + "." + snake(f.name())) + "\"";
+  }
+
   /** Reader body for a variable type whose tail bytes are decoded via a runtime codec. */
   private static String varDecode(int o, String decodeExpr) {
     return ("int off = seg.get(BE_INT, %d);\n"
@@ -402,7 +418,9 @@ public final class PgTypeProcessor extends AbstractProcessor {
   /** Builder expression yielding the wire bytes for a variable component's value. */
   private static String varEncodeExpr(Field f) {
     String n = f.name();
-    if (f.encrypted()) return "monolith.pg.runtime.PgCrypto.encrypt(" + n + ")"; // encrypt on write
+    if (f.encrypted()) {
+      return "monolith.pg.runtime.PgCrypto.encrypt(" + n + ", " + cryptoContext(f) + ")"; // encrypt on write
+    }
     return switch (f.javaType()) {
       case "java.lang.String" -> n + ".getBytes(StandardCharsets.UTF_8)";
       case "byte[]" -> n;
@@ -760,14 +778,17 @@ public final class PgTypeProcessor extends AbstractProcessor {
         .append("  new_row   jsonb\n);\n");
     // SECURITY DEFINER: the trigger writes the audit row as the (privileged) owner, so the
     // application role needs no direct access to the audit table and cannot forge entries.
-    // SET search_path FROM CURRENT pins the function's name resolution to the schema set in effect when
-    // the DDL is applied (the same one the audit table is created in), so a caller cannot redirect the
-    // unqualified audit-table reference to a decoy schema — the classic SECURITY DEFINER escalation.
+    // Hardened search_path handling: the function pins `search_path = pg_catalog, pg_temp` (so the
+    // built-ins it calls always resolve from pg_catalog and pg_temp is searched last, not first) and
+    // writes through a fully schema-qualified target derived from the trigger's own TG_TABLE_SCHEMA via
+    // format(%I.%I). Name resolution therefore cannot be steered by the caller's search_path or by a
+    // pg_temp decoy of the audit table — the classic SECURITY DEFINER escalation/audit-evasion class.
     b.append("CREATE FUNCTION ").append(table).append("_audit_record() RETURNS trigger\n")
-        .append("  LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$\nBEGIN\n")
-        .append("  INSERT INTO ").append(table).append("_audit (actor, action, old_row, new_row)\n")
-        .append("  VALUES (coalesce(current_setting('app.actor', true), 'unknown'), TG_OP,\n")
-        .append("          to_jsonb(OLD), to_jsonb(NEW));\n  RETURN NULL;\nEND $$;\n");
+        .append("  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$\nBEGIN\n")
+        .append("  EXECUTE format('INSERT INTO %I.%I (actor, action, old_row, new_row)"
+            + " VALUES ($1, $2, $3, $4)', TG_TABLE_SCHEMA, TG_TABLE_NAME || '_audit')\n")
+        .append("    USING coalesce(current_setting('app.actor', true), 'unknown'), TG_OP,\n")
+        .append("          to_jsonb(OLD), to_jsonb(NEW);\n  RETURN NULL;\nEND $$;\n");
     b.append("CREATE TRIGGER ").append(table).append("_audit_write\n")
         .append("  AFTER INSERT OR UPDATE OR DELETE ON ").append(table)
         .append("\n  FOR EACH ROW EXECUTE FUNCTION ").append(table).append("_audit_record();\n");

@@ -42,14 +42,25 @@ public @interface AccessControlled {
    * {@code allow} grant whose {@code relation} is in the corresponding set (and no such {@code deny}).
    *
    * <p>An action whose relation set is empty is <b>fail-closed</b>: with {@code read} empty no grant can
-   * read, with {@code write} empty no grant can write. Leaving <em>both</em> empty (the default) keeps the
-   * simpler relation-agnostic model: a single {@code FOR ALL} policy where any {@code allow} grant,
-   * regardless of relation, authorizes every command.
+   * read, with {@code write} empty no grant can write. To use the simpler relation-agnostic model — a
+   * single {@code FOR ALL} policy where any {@code allow} grant, regardless of relation, authorizes every
+   * command — leave both empty and set {@link #relationAgnostic()}. A bare {@code @AccessControlled} (no
+   * relations and no opt-in) is <b>rejected at compile time</b>, so a read relation never silently
+   * authorizes a write.
    */
   String[] read() default {};
 
   /** Relations that grant <b>write</b> ({@code INSERT}, {@code UPDATE}, {@code DELETE}). See {@link #read}. */
   String[] write() default {};
+
+  /**
+   * Opt into the relation-agnostic model: a single {@code FOR ALL} policy where any matching {@code allow}
+   * grant authorizes every command, regardless of relation. Only consulted when {@link #read} and
+   * {@link #write} are both empty. This must be set <em>explicitly</em> — it is the coarse "a grant is full
+   * access" mode, appropriate for instance ACLs without a read/write distinction, and naming it forces
+   * that to be a deliberate choice rather than an accidental default.
+   */
+  boolean relationAgnostic() default false;
 
   /**
    * An optional attribute condition AND-ed into the policy, a SQL boolean over this type's own columns

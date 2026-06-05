@@ -169,8 +169,9 @@ class PgTypeProcessorTest {
       Outcome out = process(Map.of("t.Secret", code), true);
 
       assertTrue(out.cleanRun(), () -> "processor errors: " + out.processorErrors());
-      assertTrue(out.read("t/SecretReader.java").contains("PgCrypto.decrypt"));
-      assertTrue(out.read("t/SecretBuilder.java").contains("PgCrypto.encrypt"));
+      // The encrypted field binds its ciphertext to its "table.column" context (AES-GCM AAD).
+      assertTrue(out.read("t/SecretReader.java").contains("PgCrypto.decrypt(_raw, \"secret.ssn\")"));
+      assertTrue(out.read("t/SecretBuilder.java").contains("PgCrypto.encrypt(ssn, \"secret.ssn\")"));
       assertTrue(Files.readString(out.ts().resolve("secret.ts")).contains("Uint8Array")); // ciphertext to client
     }
 
@@ -367,8 +368,10 @@ class PgTypeProcessorTest {
       assertTrue(sql.contains("acct_audit_write"));
       assertTrue(sql.contains("acct_audit_guard"));
       assertTrue(sql.contains("SECURITY DEFINER"));
-      assertTrue(sql.contains("SET search_path FROM CURRENT"),
-          () -> "the audit function must pin search_path to resist caller hijacking; got:\n" + sql);
+      assertTrue(sql.contains("SET search_path = pg_catalog, pg_temp"),
+          () -> "the audit function must pin a hardened search_path; got:\n" + sql);
+      assertTrue(sql.contains("format('INSERT INTO %I.%I") && sql.contains("TG_TABLE_SCHEMA"),
+          () -> "the audit insert must be schema-qualified via TG_TABLE_SCHEMA; got:\n" + sql);
       assertTrue(sql.contains("append-only"));
     }
 
@@ -388,8 +391,9 @@ class PgTypeProcessorTest {
     }
 
     @Test
-    void anAccessControlledTypeGeneratesGrantBasedRls() throws IOException {
-      String sql = sqlFor("@AccessControlled @PgType public record Acct(java.util.UUID id, int n) {}");
+    void aRelationAgnosticTypeGeneratesGrantBasedRls() throws IOException {
+      String sql = sqlFor(
+          "@AccessControlled(relationAgnostic = true) @PgType public record Acct(java.util.UUID id, int n) {}");
       assertTrue(sql.contains("FORCE ROW LEVEL SECURITY"));
       assertTrue(sql.contains("CREATE POLICY acct_access ON acct"));
       assertTrue(sql.contains("FROM monolith_grant g"));
@@ -449,8 +453,8 @@ class PgTypeProcessorTest {
 
     @Test
     void accessControlComposesWithTenantAsRestrictive() throws IOException {
-      String sql = sqlFor(
-          "@AccessControlled @PgType public record Acct(java.util.UUID id, @Tenant String org) {}");
+      String sql = sqlFor("@AccessControlled(relationAgnostic = true)"
+          + " @PgType public record Acct(java.util.UUID id, @Tenant String org) {}");
       assertTrue(sql.contains("CREATE POLICY acct_access ON acct"));
       assertTrue(sql.contains("acct_tenant_isolation ON acct AS RESTRICTIVE"),
           "tenant ANDs with the grant check, not ORs");
@@ -459,7 +463,7 @@ class PgTypeProcessorTest {
     @Test
     void accessControlAcceptsACustomResourceAndIdColumn() throws IOException {
       String sql = sqlFor(
-          "@AccessControlled(resource = \"account\", id = \"acctId\")"
+          "@AccessControlled(resource = \"account\", id = \"acctId\", relationAgnostic = true)"
               + " @PgType public record Acct(java.util.UUID acctId) {}");
       assertTrue(sql.contains("g.resource = 'account'"));
       assertTrue(sql.contains("g.resource_id IN (acct_id::text, '*')"));
@@ -469,12 +473,23 @@ class PgTypeProcessorTest {
     void accessControlEscapesSingleQuotesInTheResourceLiteral() throws IOException {
       // A resource with an apostrophe must be escaped as a doubled quote, not break out of the SQL
       // string literal and generate broken or unintended policy text.
-      String sql = sqlFor("@AccessControlled(resource = \"o'brien\")"
+      String sql = sqlFor("@AccessControlled(resource = \"o'brien\", relationAgnostic = true)"
           + " @PgType public record Acct(java.util.UUID id) {}");
       assertTrue(sql.contains("g.resource = 'o''brien'"),
           () -> "resource literal must be SQL-escaped (doubled quote); got:\n" + sql);
       assertFalse(sql.contains("'o'brien'"),
           "must not emit an unescaped apostrophe that terminates the string literal");
+    }
+
+    @Test
+    void aBareAccessControlledIsRejectedFailClosed() {
+      // No read/write relations and no explicit opt-in: rejected, so a read relation can never silently
+      // authorize a write and a developer must make the access model an explicit choice.
+      Outcome out = process("t.Acct",
+          "package t; " + IMPORTS + " @AccessControlled @PgType public record Acct(java.util.UUID id) {}");
+      assertFalse(out.cleanRun());
+      assertTrue(out.anyError("relationAgnostic"),
+          () -> "expected a fail-closed rejection naming the opt-in; got: " + out.processorErrors());
     }
 
     @Test
@@ -488,8 +503,9 @@ class PgTypeProcessorTest {
     @Test
     void anAttributeConditionIsAndedIntoThePolicy() throws IOException {
       // Balanced parentheses in the predicate are allowed (they just must not be unbalanced).
-      String sql = sqlFor("@AccessControlled(where = \"(status <> 'archived' OR status IS NULL)\")"
-          + " @PgType public record Acct(java.util.UUID id, String status) {}");
+      String sql = sqlFor(
+          "@AccessControlled(where = \"(status <> 'archived' OR status IS NULL)\", relationAgnostic = true)"
+              + " @PgType public record Acct(java.util.UUID id, String status) {}");
       assertTrue(sql.contains("(status <> 'archived' OR status IS NULL)"));
       assertTrue(sql.contains("FROM monolith_grant g"), "the condition ANDs with the grant check");
     }
@@ -716,7 +732,7 @@ class PgTypeProcessorTest {
       Class<?> fieldClass = Class.forName("monolith.pg.PgTypeProcessor$Field");
       var ctor = fieldClass.getDeclaredConstructors()[0];
       ctor.setAccessible(true);
-      return ctor.newInstance(0, "x", "text", fixed, 4, 0, javaType, false, false, false);
+      return ctor.newInstance(0, "x", "text", fixed, 4, 0, javaType, false, false, false, "t");
     }
   }
 }

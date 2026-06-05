@@ -1,11 +1,12 @@
 ---
 title: "Design: access control as generated row-level security"
-description: "Status: design proposal, not yet implemented."
+description: "Status: implemented. The rationale and contract behind @AccessControlled."
 ---
 
-**Status: design proposal, not yet implemented.** A unified, best-in-class access model, RBAC, ACLs
-(relationship-based), and consent, all **enforced inside Postgres as row-level security**, generated
-from declarations, with a pure-JDK runtime. This is the contract to agree before code.
+**Status: implemented** (`@AccessControlled`, `Grants`, and the generated row-level-security policies;
+see `GrantsIT` / `PgTypeProcessorTest`). This page is the design rationale and contract behind the
+feature, not a proposal. A unified access model — RBAC, ACLs (relationship-based), and consent — all
+**enforced inside Postgres as row-level security**, generated from declarations, with a pure-JDK runtime.
 
 ## 1. The thesis: enforce in the database, not in the app
 
@@ -148,10 +149,14 @@ healthcare case without baking domain law into the core.
 Some access rules are conditions over a row's own columns plus session attributes, not grants:
 `region = current_setting('app.region')`, `status <> 'archived'`, `classification <= current_setting('app.clearance')::int`.
 
-- **v1: a validated SQL predicate** on `@AccessControlled(where = "...")`, AND-ed into the policy. The
-  codegen validates it references only this type's columns and `current_setting` (no subqueries, no
-  cross-table reads), so it stays a safe, push-down predicate. This covers the overwhelming majority of
-  ABAC needs with zero new machinery.
+- **v1: a trusted SQL predicate** on `@AccessControlled(where = "...")`, AND-ed into the policy. This is
+  **trusted developer SQL**, not a parsed/validated expression language: the codegen applies only
+  *structural* checks (it rejects a statement terminator `;`, a SQL comment `--`/`/*`, and unbalanced
+  parentheses) and otherwise embeds the string verbatim. It does **not** verify that the predicate
+  references only this type's columns, nor does it block subqueries or cross-table reads — those are
+  valid (and the connection role then needs the relevant `SELECT`). Treat the `where` value like any
+  hand-written policy SQL: review it. This covers the overwhelming majority of ABAC needs with zero new
+  machinery.
 - **Later, if needed: a policy DSL compiled to SQL**, built in the annotation processor (build time,
   so the parser dependency never reaches the runtime), modeled exactly on `scim-sql`: an ANTLR grammar
   to a parameterized SQL predicate. This is the place a small grammar earns its keep, and the reason we

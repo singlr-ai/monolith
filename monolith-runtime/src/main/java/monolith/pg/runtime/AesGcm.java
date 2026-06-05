@@ -25,17 +25,30 @@ final class AesGcm {
   }
 
   static byte[] encrypt(SecretKeySpec key, byte[] nonce, byte[] plaintext) {
-    return doFinal(Cipher.ENCRYPT_MODE, key, nonce, plaintext);
+    return doFinal(Cipher.ENCRYPT_MODE, key, nonce, plaintext, null);
   }
 
   static byte[] decrypt(SecretKeySpec key, byte[] nonce, byte[] ciphertext) {
-    return doFinal(Cipher.DECRYPT_MODE, key, nonce, ciphertext);
+    return doFinal(Cipher.DECRYPT_MODE, key, nonce, ciphertext, null);
   }
 
-  private static byte[] doFinal(int mode, SecretKeySpec key, byte[] nonce, byte[] input) {
+  /** As {@link #encrypt(SecretKeySpec, byte[], byte[])}, binding {@code aad} as associated data into the tag. */
+  static byte[] encrypt(SecretKeySpec key, byte[] nonce, byte[] plaintext, byte[] aad) {
+    return doFinal(Cipher.ENCRYPT_MODE, key, nonce, plaintext, aad);
+  }
+
+  /** Decrypts and verifies the same {@code aad} was bound at encryption (else the tag check fails). */
+  static byte[] decrypt(SecretKeySpec key, byte[] nonce, byte[] ciphertext, byte[] aad) {
+    return doFinal(Cipher.DECRYPT_MODE, key, nonce, ciphertext, aad);
+  }
+
+  private static byte[] doFinal(int mode, SecretKeySpec key, byte[] nonce, byte[] input, byte[] aad) {
     try {
       Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
       cipher.init(mode, key, new GCMParameterSpec(TAG_BITS, nonce));
+      if (aad != null) {
+        cipher.updateAAD(aad);
+      }
       return cipher.doFinal(input);
     } catch (GeneralSecurityException e) {
       throw new RuntimeException(e);

@@ -1,12 +1,13 @@
 ---
 title: "Design: the transactional durable queue"
-description: "Status: design proposal, not yet implemented."
+description: "Status: implemented. The rationale and contract behind monolith-queue."
 ---
 
-**Status: design proposal, not yet implemented.** This is the contract we agree on before writing
-code. It is the one general primitive underneath the "transactional outbox" and "durable jobs"
-patterns: a durable, ordered, at-least-once message queue that lives in the same Postgres as your
-data, so enqueuing composes atomically with your transactions.
+**Status: implemented** (`monolith-queue`: `Queue`, `Worker`, `Message`; see `QueueIT` / `WorkerIT` /
+`DeliveryIT`). This page is the design rationale and contract behind the feature, not a proposal. It is
+the one general primitive underneath the "transactional outbox" and "durable jobs" patterns: a durable,
+ordered, at-least-once message queue that lives in the same Postgres as your data, so enqueuing composes
+atomically with your transactions.
 
 ## 1. Purpose and scope
 

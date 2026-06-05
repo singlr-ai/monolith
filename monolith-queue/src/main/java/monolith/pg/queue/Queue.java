@@ -29,14 +29,16 @@ public final class Queue {
   private static final String SCHEMA = """
       CREATE TABLE IF NOT EXISTS monolith_queue (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        topic text NOT NULL,
+        -- topic shape mirrors Message.requireValidTopic, so even a direct writer (a migration, an admin
+        -- script, a bulk loader) cannot insert a structurally invalid topic that would later reach LISTEN.
+        topic text NOT NULL CHECK (topic ~ '^[A-Za-z0-9._-]{1,48}$'),
         msg_key text,
         payload bytea NOT NULL,
         idem_key text,
         metadata jsonb NOT NULL DEFAULT '{}',
         status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'succeeded', 'dead')),
-        attempts int NOT NULL DEFAULT 0,
-        max_attempts int NOT NULL,
+        attempts int NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        max_attempts int NOT NULL CHECK (max_attempts >= 1),
         run_at timestamptz NOT NULL DEFAULT now(),
         lease_until timestamptz,
         last_error text,

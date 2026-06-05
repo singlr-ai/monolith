@@ -49,9 +49,9 @@ public final class LiveQueryWsListener implements WsListener {
 
   /**
    * Decides whether a session may subscribe to a query+param — the first-class authorization hook. Set
-   * tenant/actor context (or consult it) here and return {@code false} to reject. The default policy
-   * {@linkplain Builder#authorize allows every subscription}, so a network-facing deployment must
-   * install one; otherwise any client can subscribe by guessing query names and params.
+   * tenant/actor context (or consult it) here and return {@code false} to reject. There is no default:
+   * {@link Builder#build()} requires an explicit {@link Builder#authorize authorizer} (or a deliberate
+   * {@link Builder#allowAllForDevelopment()}), so a network-facing deployment cannot fall open by omission.
    */
   @FunctionalInterface
   public interface Authorizer {
@@ -130,7 +130,7 @@ public final class LiveQueryWsListener implements WsListener {
   public static final class Builder {
     private final ReactiveHub hub;
     private final Map<String, QueryRunner> runners = new HashMap<>();
-    private Authorizer authorizer = (session, query, param) -> true; // allow-all until one is set
+    private Authorizer authorizer; // null until set: build() fails closed rather than default to allow-all
     private int maxParamLength = 1024;
 
     private Builder(ReactiveHub hub) {
@@ -145,11 +145,21 @@ public final class LiveQueryWsListener implements WsListener {
 
     /**
      * Set the authorization hook. It runs before every subscription; return {@code false} to reject.
-     * Strongly recommended for any network-facing endpoint — without one, any client can subscribe by
-     * guessing query names and params.
+     * Required for {@link #build()} unless {@link #allowAllForDevelopment()} is called: a network-facing
+     * endpoint must not be able to default to allow-all by omission.
      */
     public Builder authorize(Authorizer authorizer) {
       this.authorizer = java.util.Objects.requireNonNull(authorizer, "authorizer");
+      return this;
+    }
+
+    /**
+     * Install an allow-all authorizer for local development. Named deliberately so that shipping a
+     * network-facing PHI endpoint without a real {@link #authorize(Authorizer) authorizer} is a
+     * conscious choice, not an accident — production code must call {@link #authorize} instead.
+     */
+    public Builder allowAllForDevelopment() {
+      this.authorizer = (session, query, param) -> true;
       return this;
     }
 
@@ -163,6 +173,10 @@ public final class LiveQueryWsListener implements WsListener {
     }
 
     public LiveQueryWsListener build() {
+      if (authorizer == null) {
+        throw new IllegalStateException("an Authorizer is required: call authorize(...) for a real policy,"
+            + " or allowAllForDevelopment() to deliberately allow every subscription");
+      }
       return new LiveQueryWsListener(hub, Map.copyOf(runners), authorizer, maxParamLength);
     }
   }

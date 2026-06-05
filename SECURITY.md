@@ -14,10 +14,13 @@ business days. As an experimental project there is no formal SLA yet.
 ## What is shipped
 
 - **Field encryption (`@Encrypted`).** Envelope encryption for annotated fields, with a pluggable
-  `KeyProvider`. **Default key custody is in-process**: `PgCrypto` initializes a `LocalKeyProvider`
-  that reads the data-encryption key from the `MONOLITH_FIELD_KEY` environment variable. This is
-  appropriate for development and self-managed deployments that control the process environment; it is
-  **not** an HSM/KMS integration.
+  `KeyProvider`. Each value carries a fresh data key under AES-256-GCM, and the ciphertext is **bound to
+  its field context** (`table.column`) as associated data, so a blob copied to another row/column or
+  table fails to decrypt rather than silently substituting (wire version 3; version-2 data stays
+  readable). **Default key custody is in-process**: `PgCrypto` initializes a `LocalKeyProvider` that
+  reads the data-encryption key from the `MONOLITH_FIELD_KEY` environment variable. This is appropriate
+  for development and self-managed deployments that control the process environment; it is **not** an
+  HSM/KMS integration.
 - **Forced row-level security (`@AccessControlled`, `@Tenant`).** Generates Postgres `FORCE ROW LEVEL
   SECURITY` policies over a unified grant model (allow/deny, roles, resource/`*`). Tenant isolation is
   emitted as a `RESTRICTIVE` policy so it ANDs with the grant check. Policies are keyed on

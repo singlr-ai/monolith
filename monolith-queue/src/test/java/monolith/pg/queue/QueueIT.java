@@ -76,6 +76,24 @@ class QueueIT {
   }
 
   @Test
+  @DisplayName("the queue table rejects structurally invalid rows even from a direct writer")
+  void schemaConstraintsRejectInvalidRows() {
+    // Defense in depth: a row the Java API would reject must also be rejected by the database, so a
+    // migration / admin script / bulk loader cannot smuggle a structurally invalid queue row past it.
+    assertTrue(tryExec("INSERT INTO monolith_queue (topic, payload, max_attempts) "
+        + "VALUES ('has space', '\\x00'::bytea, 5)").isFailure(), "an invalid topic shape is rejected");
+    assertTrue(tryExec("INSERT INTO monolith_queue (topic, payload, max_attempts) "
+        + "VALUES ('evil\"; --', '\\x00'::bytea, 5)").isFailure(), "an injection-shaped topic is rejected");
+    assertTrue(tryExec("INSERT INTO monolith_queue (topic, payload, max_attempts) "
+        + "VALUES ('ok', '\\x00'::bytea, 0)").isFailure(), "max_attempts must be >= 1");
+    assertTrue(tryExec("INSERT INTO monolith_queue (topic, payload, max_attempts, attempts) "
+        + "VALUES ('ok', '\\x00'::bytea, 5, -1)").isFailure(), "attempts must be >= 0");
+    // a well-formed direct insert still works
+    assertTrue(tryExec("INSERT INTO monolith_queue (topic, payload, max_attempts) "
+        + "VALUES ('ok.topic-1', '\\x00'::bytea, 5)").isSuccess(), "a valid row is accepted");
+  }
+
+  @Test
   @DisplayName("enqueue is atomic with the surrounding transaction")
   void enqueueIsAtomicWithTx() {
     Tx.tx(conn, c -> {
@@ -244,6 +262,12 @@ class QueueIT {
   private static void exec(String sql) {
     try (Arena a = Arena.ofConfined()) {
       Pg.exec(a, conn, sql).getOrThrow();
+    }
+  }
+
+  private static Result<Void> tryExec(String sql) {
+    try (Arena a = Arena.ofConfined()) {
+      return Pg.exec(a, conn, sql);
     }
   }
 

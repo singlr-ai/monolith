@@ -28,7 +28,8 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public final class PgCrypto {
 
-  private static final byte VERSION = 2;
+  private static final byte VERSION_NO_AAD = 2;     // legacy: ciphertext not bound to any context
+  private static final byte VERSION_AAD = 3;        // ciphertext bound to its field context via AES-GCM AAD
   private static final int DATA_KEY_BYTES = 32; // AES-256 data key
   private static volatile KeyProvider provider = new LocalKeyProvider();
 
@@ -58,17 +59,49 @@ public final class PgCrypto {
     provider = Objects.requireNonNull(keyProvider, "keyProvider");
   }
 
+  /** Encrypts with no context binding (wire version 2). Prefer {@link #encrypt(String, String)}. */
   public static byte[] encrypt(String plaintext) {
+    return encryptInternal(plaintext, null);
+  }
+
+  /**
+   * Encrypts and binds the ciphertext to {@code context} as AES-GCM associated data (wire version 3), so
+   * the value only decrypts under the same context. The generated reader/builder pass {@code table.column}
+   * here, so a ciphertext copied to a different row/column or table fails its tag check instead of silently
+   * decrypting — a defense against database-level ciphertext substitution.
+   */
+  public static byte[] encrypt(String plaintext, String context) {
+    return encryptInternal(plaintext, aad(Objects.requireNonNull(context, "context")));
+  }
+
+  /** Decrypts a value written without a context binding (wire version 2). */
+  public static String decrypt(byte[] blob) {
+    return decryptInternal(blob, null);
+  }
+
+  /**
+   * Decrypts a value, verifying the {@code context} bound at encryption. A version-2 (unbound) blob ignores
+   * {@code context} and still decrypts, so old data stays readable after upgrading to context binding.
+   */
+  public static String decrypt(byte[] blob, String context) {
+    return decryptInternal(blob, Objects.requireNonNull(context, "context"));
+  }
+
+  private static byte[] aad(String context) {
+    return context.getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static byte[] encryptInternal(String plaintext, byte[] aad) {
     byte[] dataKey = AesGcm.randomBytes(DATA_KEY_BYTES);
     try {
       byte[] nonce = AesGcm.randomBytes(AesGcm.NONCE_LENGTH);
       byte[] ciphertext = AesGcm.encrypt(
-          new SecretKeySpec(dataKey, "AES"), nonce, plaintext.getBytes(StandardCharsets.UTF_8));
+          new SecretKeySpec(dataKey, "AES"), nonce, plaintext.getBytes(StandardCharsets.UTF_8), aad);
       KeyProvider.WrappedKey wrapped = provider.wrap(dataKey);
       byte[] keyId = wrapped.keyId().getBytes(StandardCharsets.UTF_8);
       return ByteBuffer.allocate(
               1 + 1 + keyId.length + 2 + wrapped.wrapped().length + nonce.length + ciphertext.length)
-          .put(VERSION)
+          .put(aad == null ? VERSION_NO_AAD : VERSION_AAD)
           .put((byte) keyId.length).put(keyId)
           .putShort((short) wrapped.wrapped().length).put(wrapped.wrapped())
           .put(nonce).put(ciphertext)
@@ -78,11 +111,16 @@ public final class PgCrypto {
     }
   }
 
-  public static String decrypt(byte[] blob) {
+  private static String decryptInternal(byte[] blob, String context) {
     ByteBuffer buffer = ByteBuffer.wrap(blob);
     byte version = buffer.get();
-    if (version != VERSION) {
+    boolean contextBound = version == VERSION_AAD;
+    if (version != VERSION_NO_AAD && !contextBound) {
       throw new IllegalStateException("unsupported field-encryption version: " + version);
+    }
+    if (contextBound && context == null) {
+      throw new IllegalStateException(
+          "field-encryption version " + version + " is context-bound; decrypt requires its context");
     }
     byte[] keyId = new byte[buffer.get() & 0xFF];
     buffer.get(keyId);
@@ -95,8 +133,9 @@ public final class PgCrypto {
 
     byte[] dataKey = provider.unwrap(new String(keyId, StandardCharsets.UTF_8), wrapped);
     try {
-      return new String(
-          AesGcm.decrypt(new SecretKeySpec(dataKey, "AES"), nonce, ciphertext), StandardCharsets.UTF_8);
+      byte[] plain = AesGcm.decrypt(
+          new SecretKeySpec(dataKey, "AES"), nonce, ciphertext, contextBound ? aad(context) : null);
+      return new String(plain, StandardCharsets.UTF_8);
     } finally {
       Arrays.fill(dataKey, (byte) 0);
     }

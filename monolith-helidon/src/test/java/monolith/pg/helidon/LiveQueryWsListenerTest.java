@@ -70,6 +70,7 @@ class LiveQueryWsListenerTest {
     var hub = new ReactiveHub(null, List.of(rules));
     var runs = new AtomicInteger();
     var listener = LiveQueryWsListener.builder(hub)
+        .allowAllForDevelopment()
         .query("Q", param -> {
           runs.incrementAndGet();
           return WsResults.frame(List.of());
@@ -149,6 +150,7 @@ class LiveQueryWsListenerTest {
     var hub = new ReactiveHub(null, List.of());
     var runs = new AtomicInteger();
     var listener = LiveQueryWsListener.builder(hub)
+        .allowAllForDevelopment()
         .withMaxParamLength(8)
         .query("Q", param -> { runs.incrementAndGet(); return WsResults.frame(List.of()); })
         .build();
@@ -165,6 +167,15 @@ class LiveQueryWsListenerTest {
   void aNonPositiveParamCapIsRejectedAtBuildTime() {
     var b = LiveQueryWsListener.builder(new ReactiveHub(null, List.of()));
     assertThrows(IllegalArgumentException.class, () -> b.withMaxParamLength(0));
+  }
+
+  @Test
+  void buildWithoutAnAuthorizerFailsClosed() {
+    // No default allow-all: a network-facing endpoint cannot be built without a deliberate auth choice.
+    var b = LiveQueryWsListener.builder(new ReactiveHub(null, List.of()))
+        .query("Q", param -> WsResults.frame(List.of()));
+    var ex = assertThrows(IllegalStateException.class, b::build);
+    assertTrue(ex.getMessage().contains("Authorizer"), ex.getMessage());
   }
 
   @Test

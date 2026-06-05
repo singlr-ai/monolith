@@ -107,6 +107,44 @@ class PgCryptoTest {
   }
 
   @Test
+  void contextBoundCiphertextRoundTripsUnderItsContext() {
+    PgCrypto.setKey(KEY);
+    byte[] wire = PgCrypto.encrypt("123-45-6789", "patient.ssn");
+    assertEquals("123-45-6789", PgCrypto.decrypt(wire, "patient.ssn"));
+  }
+
+  @Test
+  void ciphertextRejectsADifferentContext() {
+    PgCrypto.setKey(KEY);
+    // A blob copied into another column/table (a different context) must fail its tag check, not decrypt.
+    byte[] wire = PgCrypto.encrypt("123-45-6789", "patient.ssn");
+    var ex = assertThrows(RuntimeException.class, () -> PgCrypto.decrypt(wire, "patient.diagnosis"));
+    assertFalse(ex instanceof IllegalStateException, "a crypto tag failure, not a configuration error");
+  }
+
+  @Test
+  void aContextBoundBlobRequiresContextToDecrypt() {
+    PgCrypto.setKey(KEY);
+    byte[] wire = PgCrypto.encrypt("secret", "patient.ssn"); // version 3
+    var ex = assertThrows(IllegalStateException.class, () -> PgCrypto.decrypt(wire));
+    assertTrue(ex.getMessage().contains("context-bound"));
+  }
+
+  @Test
+  void legacyUnboundCiphertextStillDecryptsWithOrWithoutContext() {
+    PgCrypto.setKey(KEY);
+    byte[] legacy = PgCrypto.encrypt("old-value"); // version 2, no context binding
+    assertEquals("old-value", PgCrypto.decrypt(legacy), "readable with no context");
+    assertEquals("old-value", PgCrypto.decrypt(legacy, "patient.ssn"), "context ignored for unbound data");
+  }
+
+  @Test
+  void encryptRequiresANonNullContext() {
+    PgCrypto.setKey(KEY);
+    assertThrows(NullPointerException.class, () -> PgCrypto.encrypt("x", null));
+  }
+
+  @Test
   void plaintextNeverAppearsInTheCiphertext() {
     PgCrypto.setKey(KEY);
     byte[] ssn = "123-45-6789".getBytes();
