@@ -54,9 +54,23 @@ public final class Wal {
   }
 
   public static void drop(MemorySegment conn, String slot) {
+    dropSlotOnly(conn, slot);
+    dropPublication(conn, slot);
+  }
+
+  /**
+   * Drops just the replication slot (not the publication). The slot is the WAL-retaining resource, so a
+   * caller tearing down under contention drops it first — freeing any walsender — before the publication.
+   */
+  public static void dropSlotOnly(MemorySegment conn, String slot) {
     validateSlot(slot);
     exec(conn, "SELECT pg_drop_replication_slot('" + slot
         + "') FROM pg_replication_slots WHERE slot_name = '" + slot + "'");
+  }
+
+  /** Drops just the publication a slot streamed from. Safe to retry on its own; no-op if already gone. */
+  public static void dropPublication(MemorySegment conn, String slot) {
+    validateSlot(slot);
     exec(conn, "DROP PUBLICATION IF EXISTS " + publication(slot));
   }
 

@@ -141,20 +141,31 @@ public final class Invalidator implements AutoCloseable {
     try (Arena a = Arena.ofConfined()) {
       MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
       try {
-        for (int attempt = 0; attempt < 30; attempt++) { // ~3s, as the walsender finishes detaching
-          try {
-            Wal.drop(admin, slot);
-            return; // slot and publication both gone
-          } catch (RuntimeException settling) {
-            if (!pause(100)) return; // interrupted: give up, best effort
-          }
-        }
+        // Drop the slot and the publication on independent retry budgets. They must not share one: the
+        // slot can stay active for seconds while a walsender detaches, and coupling the two let a slow
+        // slot drop starve the publication drop of retries, leaking the publication. The slot goes first
+        // because it retains WAL and because dropping it frees the walsender that contends for the
+        // publication's lock, so DROP PUBLICATION then succeeds promptly.
+        retryDrop(() -> Wal.dropSlotOnly(admin, slot));
+        retryDrop(() -> Wal.dropPublication(admin, slot));
       } finally {
         Pg.finish(admin);
       }
     } catch (RuntimeException unreachableAtShutdown) {
       // the server is down: the orphaned slot is reclaimed by max_slot_wal_keep_size or
       // Wal.dropInactive. We must not throw, or close() would fail because the database is unreachable.
+    }
+  }
+
+  /** Retry one teardown drop for ~3s as the server settles (a walsender detaching, a brief lock race). */
+  private void retryDrop(Runnable drop) {
+    for (int attempt = 0; attempt < 30; attempt++) {
+      try {
+        drop.run();
+        return;
+      } catch (RuntimeException settling) {
+        if (!pause(100)) return; // interrupted: give up, best effort
+      }
     }
   }
 
