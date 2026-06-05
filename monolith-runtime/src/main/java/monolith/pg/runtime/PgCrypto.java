@@ -67,8 +67,10 @@ public final class PgCrypto {
   /**
    * Encrypts and binds the ciphertext to {@code context} as AES-GCM associated data (wire version 3), so
    * the value only decrypts under the same context. The generated reader/builder pass {@code table.column}
-   * here, so a ciphertext copied to a different row/column or table fails its tag check instead of silently
-   * decrypting — a defense against database-level ciphertext substitution.
+   * here, so a ciphertext copied to a different <em>column or table</em> fails its tag check instead of
+   * silently decrypting — a defense against database-level ciphertext substitution. The context is
+   * {@code table.column}, not row identity, so it does not bind across rows of the same column; include a
+   * primary key in {@code context} if per-row binding is required.
    */
   public static byte[] encrypt(String plaintext, String context) {
     return encryptInternal(plaintext, aad(Objects.requireNonNull(context, "context")));

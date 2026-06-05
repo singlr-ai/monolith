@@ -297,6 +297,38 @@ public final class Pg {
     } catch (Throwable t) { throw new RuntimeException(t); }
   }
 
+  /**
+   * As {@link #textColumn} but binds a single value as parameter {@code $1} instead of interpolating it,
+   * so a hostile value cannot alter the query. The value is sent in text format with its type left for
+   * Postgres to infer from context, so {@code WHERE col = $1} casts it to {@code col}'s type (uuid, int,
+   * text, …) exactly as a literal would. Used by generated invalidation back-reference lookups over
+   * untrusted WAL values.
+   */
+  public static Result<java.util.List<String>> textColumnParam(
+      Arena arena, MemorySegment conn, String sql, String param) {
+    try {
+      MemorySegment cmd = arena.allocateFrom(sql, StandardCharsets.UTF_8);
+      MemorySegment values = arena.allocate(PTR, 1);
+      values.setAtIndex(PTR, 0, arena.allocateFrom(param, StandardCharsets.UTF_8));
+      // 1 param; NULL paramTypes (infer); NULL lengths/formats (text format, NUL-terminated); text result.
+      MemorySegment res = (MemorySegment) PQexecParams.invokeExact(
+          conn, cmd, 1, MemorySegment.NULL, values, MemorySegment.NULL, MemorySegment.NULL, 0);
+      int st = (int) PQresultStatus.invokeExact(res);
+      if (st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK) {
+        String err = cstr((MemorySegment) PQresultErrorMessage.invokeExact(res));
+        PQclear.invokeExact(res);
+        return Result.failure("textColumnParam failed: " + err + "\n  sql: " + sql);
+      }
+      int n = (int) PQntuples.invokeExact(res);
+      java.util.List<String> out = new java.util.ArrayList<>(n);
+      for (int r = 0; r < n; r++) {
+        out.add(cstr((MemorySegment) PQgetvalue.invokeExact(res, r, 0)));
+      }
+      PQclear.invokeExact(res);
+      return Result.success(out);
+    } catch (Throwable t) { throw new RuntimeException(t); }
+  }
+
   public static boolean binaryTuples(MemorySegment res) {
     try { return ((int) PQbinaryTuples.invokeExact(res)) != 0; }
     catch (Throwable t) { throw new RuntimeException(t); }

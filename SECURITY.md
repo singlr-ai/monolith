@@ -15,9 +15,11 @@ business days. As an experimental project there is no formal SLA yet.
 
 - **Field encryption (`@Encrypted`).** Envelope encryption for annotated fields, with a pluggable
   `KeyProvider`. Each value carries a fresh data key under AES-256-GCM, and the ciphertext is **bound to
-  its field context** (`table.column`) as associated data, so a blob copied to another row/column or
-  table fails to decrypt rather than silently substituting (wire version 3; version-2 data stays
-  readable). **Default key custody is in-process**: `PgCrypto` initializes a `LocalKeyProvider` that
+  its field context** (`table.column`) as associated data, so a blob copied to a different **column or
+  table** fails to decrypt rather than silently substituting (wire version 3; version-2 data stays
+  readable). The context is `table.column`, **not** row identity, so it does not detect a swap between two
+  rows of the same column; bind a primary key into the context if you need per-row binding. **Default key
+  custody is in-process**: `PgCrypto` initializes a `LocalKeyProvider` that
   reads the data-encryption key from the `MONOLITH_FIELD_KEY` environment variable. This is appropriate
   for development and self-managed deployments that control the process environment; it is **not** an
   HSM/KMS integration.
@@ -51,8 +53,10 @@ land, do not represent a deployment as HIPAA-ready on the basis of this library 
   settings; a query that forgets to set them will be denied or under-scoped, not silently elevated, but
   the application owns establishing them correctly.
 - **Authorize network-facing subscriptions.** The optional Helidon `LiveQueryWsListener` accepts a
-  `<QueryName>:<param>` frame. Install an `authorize(session, query, param)` hook (and keep the default
-  param-length bound) — without one, any client can subscribe by guessing query names and params.
+  `<QueryName>:<param>` frame. `build()` is **fail-closed**: it throws unless you install an
+  `authorize(session, query, param)` hook, so production code must call `authorize(...)`. The
+  `allowAllForDevelopment()` escape hatch exists only for local development and must never reach a
+  deployed system — forbid it in review or static checks. Keep the default param-length bound.
   Unknown-query and unauthorized rejections are deliberately indistinguishable so clients cannot probe
   which queries exist.
 - **Protect `MONOLITH_FIELD_KEY`** and the database/replication credentials as you would any secret;

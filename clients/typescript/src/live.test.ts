@@ -17,7 +17,7 @@ function fakeWebSocket() {
     closed = false;
     onopen?: () => void;
     onmessage?: (event: { data: ArrayBuffer }) => void;
-    onclose?: () => void;
+    onclose?: (event?: { code?: number }) => void;
     constructor(url: string) {
       this.url = url;
       instances.push(this);
@@ -90,6 +90,18 @@ test('an unexpected close reconnects after the delay', (t) => {
   t.mock.timers.tick(1000);
 
   assert.equal(instances.length, 2);
+});
+
+test('a policy rejection (close 1008) does not reconnect', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { Fake, instances } = fakeWebSocket();
+  const live = new MonolithLive('ws://host/live', { webSocket: Fake, reconnectMs: 1000 });
+
+  live.subscribe('Q', 'p', identityReader, () => {});
+  instances[0].onclose?.({ code: 1008 }); // server rejected the subscription: permanent, do not retry
+  t.mock.timers.tick(10000);
+
+  assert.equal(instances.length, 1, 'a 1008 policy close must not trigger a reconnect');
 });
 
 test('reconnectMs of 0 disables reconnection', (t) => {

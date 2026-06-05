@@ -26,9 +26,15 @@ export interface LiveOptions {
  * Client for Monolith live queries over WebSocket. Each {@link subscribe} opens its own socket
  * (the server allows one subscription per connection), sends `"<QueryName>:<param>"`, and on every
  * pushed frame decodes the rows through the generated reader and invokes the callback with the full
- * current result. A dropped connection reconnects automatically unless `reconnectMs` is `0`.
+ * current result. A dropped connection reconnects automatically unless `reconnectMs` is `0`, except a
+ * deliberate policy rejection (close code `1008`: unauthorized, unknown, malformed, or overlong
+ * subscription), which is permanent and is not retried — reconnecting would just re-send the rejected
+ * frame in a loop and hammer the server's auth path.
  */
 export class MonolithLive {
+  /** WebSocket close code the server uses to reject a subscription (RFC 6455 policy violation). */
+  private static readonly POLICY_CLOSE = 1008;
+
   private readonly url: string;
   private readonly webSocket: typeof WebSocket;
   private readonly reconnectMs: number;
@@ -56,8 +62,11 @@ export class MonolithLive {
         const bytes = new Uint8Array(event.data as ArrayBuffer);
         onRows(parseFrame(bytes).map((row) => reader.from(row)));
       };
-      socket.onclose = () => {
-        if (!unsubscribed && this.reconnectMs > 0) {
+      socket.onclose = (event?: CloseEvent) => {
+        // A policy rejection (1008) is permanent: do not reconnect, or we would resend the rejected
+        // subscription forever. A network/service close (no code, or any other code) does reconnect.
+        const policyRejected = event?.code === MonolithLive.POLICY_CLOSE;
+        if (!unsubscribed && this.reconnectMs > 0 && !policyRejected) {
           setTimeout(open, this.reconnectMs);
         }
       };

@@ -20,6 +20,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import monolith.pg.runtime.Pg;
+import monolith.pg.runtime.PgInvalidate;
 import monolith.pg.runtime.PgParam;
 import monolith.pg.runtime.PgPool;
 import monolith.pg.runtime.Result;
@@ -281,6 +282,25 @@ class RuntimeIT {
       assertTrue(changes.stream().anyMatch(c -> c.table().equals("widgets")));
     } finally {
       Wal.drop(admin, slot);
+    }
+  }
+
+  @Test
+  @DisplayName("PgInvalidate.resolve binds the key value, so a hostile WAL key cannot inject SQL")
+  void invalidationResolveBindsKeysSafely() {
+    insertBox("EU");
+    insertBox("US");
+    insertBox("O'Brien"); // a legitimate region whose value contains a quote
+    try (PgPool pool = new PgPool(CONNINFO, 2)) {
+      // A hostile join-key value must be treated as data, not SQL: it matches no region, so it resolves
+      // to nothing. Under string-concatenation this payload broadened the predicate to match every row.
+      Set<String> injected = PgInvalidate.resolve(pool, Set.of("' OR '1'='1"),
+          "SELECT region FROM boxes WHERE region = $1");
+      assertTrue(injected.isEmpty(), "a hostile key must not broaden the predicate to match every row");
+
+      // A legitimate key still resolves, including one that itself contains a quote (data, not syntax).
+      assertEquals(Set.of("O'Brien"), PgInvalidate.resolve(pool, Set.of("O'Brien"),
+          "SELECT region FROM boxes WHERE region = $1"));
     }
   }
 

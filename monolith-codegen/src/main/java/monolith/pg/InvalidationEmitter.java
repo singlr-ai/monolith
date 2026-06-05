@@ -254,10 +254,11 @@ final class InvalidationEmitter {
         cases.append("      case \"").append(e.table()).append("\": return valuesOf.apply(\"")
             .append(e.keyColumn()).append("\");\n");
       } else {
+        // The WAL key is bound as $1 (never interpolated), so a hostile row value cannot inject SQL.
         cases.append("      case \"").append(e.table())
             .append("\": return PgInvalidate.resolve(pool, valuesOf.apply(\"").append(e.keyColumn())
-            .append("\"),\n          id -> \"").append(PgTypeProcessor.javaStringLiteral(e.backRefSqlPrefix()))
-            .append("'\" + id + \"'\");\n");
+            .append("\"),\n          \"").append(PgTypeProcessor.javaStringLiteral(e.backRefSqlPrefix()))
+            .append("$1\");\n");
       }
     }
     return cases.toString();

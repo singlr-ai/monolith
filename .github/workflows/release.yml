@@ -47,9 +47,12 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: GPG_PASSPHRASE
 
+      # Release must be at least as strict as CI: -Pci sets monolith.requireDb=true so the DB-backed
+      # integration tests fail (not silently self-skip) if Postgres, logical decoding, or libpq is
+      # missing. Publishing must never happen on a build where the database harness was absent.
       - name: Deploy to Maven Central
         run: >
-          mvn clean deploy -Prelease --batch-mode
+          mvn clean deploy -Pci,release --batch-mode
           -pl monolith-api,monolith-codegen,monolith-runtime,monolith-reactive,monolith-queue,monolith-helidon
         env:
           MONOLITH_TEST_CONNINFO: host=localhost dbname=monolith_test user=postgres

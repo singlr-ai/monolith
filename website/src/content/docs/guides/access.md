@@ -21,9 +21,16 @@ Grants.install(conn).getOrThrow();
 ## Declaring
 
 ```java
-@AccessControlled @PgType
+@AccessControlled(read = {"viewer", "care_team"}, write = {"owner"})
+@PgType
 public record Patient(UUID id, @Tenant UUID org, String name, @Encrypted String ssn) {}
 ```
+
+Map relations to actions with `read`/`write`: the codegen emits a policy per command, so a `viewer` or
+`care_team` grant authorizes reads while only an `owner` grant authorizes writes — a read-granting
+relation can never satisfy a write. A bare `@AccessControlled` (no relations) is **rejected at compile
+time**; for the simpler "any grant is full access" model, opt in explicitly with
+`@AccessControlled(relationAgnostic = true)`.
 
 The codegen emits forced RLS for the resource (the table name by default; override with
 `@AccessControlled(resource = "patient")`). The row is identified by the `id` component

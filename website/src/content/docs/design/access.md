@@ -94,9 +94,10 @@ CREATE POLICY patient_access ON patient USING (
 - **Read vs write.** Set `@AccessControlled(read = {...}, write = {...})` to map relations to actions:
   the codegen then emits a separate policy per command (`FOR SELECT` keyed on the read relations, e.g.
   `viewer`/`care_team`; `FOR INSERT/UPDATE/DELETE` keyed on the write relations, e.g. `owner`/`editor`),
-  so a read-granting relation can never satisfy a write. An action with no relations is fail-closed, and
-  an empty `read`/`write` (the default) keeps the simpler relation-agnostic model — a single `FOR ALL`
-  policy where any `allow` grant authorizes every command.
+  so a read-granting relation can never satisfy a write. An action with no relations is fail-closed. A
+  bare `@AccessControlled` (no `read`/`write` and no opt-in) is **rejected at compile time**; to use the
+  simpler relation-agnostic model — a single `FOR ALL` policy where any `allow` grant authorizes every
+  command — set `@AccessControlled(relationAgnostic = true)` explicitly.
 - **Fail-closed.** With `app.actor` unset, `current_setting(...,true)` is null, nothing matches, no
   rows. Same posture as `@Tenant`.
 - **Composition.** `@Tenant` and `@AccessControlled` both AND into effect: tenant isolation first, then
@@ -163,7 +164,8 @@ Some access rules are conditions over a row's own columns plus session attribute
   studied scim-sql. It is **not** CEL: compile-to-SQL, push-down, no Guava/protobuf, no JVM evaluation.
 
 So the answer to "CEL, ANTLR, or build our own": for RBAC/ReBAC/consent, **no expression language at
-all**, it is table-driven RLS. For ABAC, **a validated SQL predicate now**, and **our own
+all**, it is table-driven RLS. For ABAC, **a trusted SQL predicate now** (structural checks only — it
+is embedded developer SQL, not parsed or validated for column/subquery scope), and **our own
 scim-sql-style SQL compiler later** if richer conditions are demanded, never a runtime evaluator.
 
 ## 7. Decisions (the three open questions, proposed)
