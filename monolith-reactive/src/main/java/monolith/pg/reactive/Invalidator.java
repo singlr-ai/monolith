@@ -35,6 +35,10 @@ public final class Invalidator implements AutoCloseable {
   /** Upper bound on how long {@link #close()} waits for the loop to stop and drop the slot. */
   private static final long SHUTDOWN_JOIN_MILLIS = 15_000;
 
+  /** Teardown retries per drop (slot, then publication) and the pause between them: ~5s of settling. */
+  private static final int TEARDOWN_DROP_ATTEMPTS = 50;
+  private static final long TEARDOWN_DROP_BACKOFF_MILLIS = 100;
+
   private final String conninfo;
   private final String slot;
   private final ReactiveHub hub;
@@ -125,7 +129,6 @@ public final class Invalidator implements AutoCloseable {
 
   /** Final teardown on the loop thread once the loop exits: close the stream and drop the slot reliably. */
   private void teardown() {
-    Thread.interrupted(); // clear the interrupt close() set, so the cleanup retries below can pause
     closeStreamQuietly();
     dropSlot();
   }
@@ -157,26 +160,33 @@ public final class Invalidator implements AutoCloseable {
     }
   }
 
-  /** Retry one teardown drop for ~3s as the server settles (a walsender detaching, a brief lock race). */
+  /**
+   * Run one teardown drop, retrying for ~5s as the server settles (a walsender detaching, a brief lock
+   * race on the publication). This is <em>uninterruptible</em> by design: {@link #close()} interrupts the
+   * loop thread only to break the reconnect backoff so the loop exits promptly, but that interrupt must
+   * never abort teardown — the section that must not leak a WAL-retaining slot or its publication. So a
+   * stray interrupt is deferred (the retries still sleep and run the full budget) and restored at the end,
+   * rather than cutting the retries short on the first transient failure.
+   */
   private void retryDrop(Runnable drop) {
-    for (int attempt = 0; attempt < 30; attempt++) {
-      try {
-        drop.run();
-        return;
-      } catch (RuntimeException settling) {
-        if (!pause(100)) return; // interrupted: give up, best effort
-      }
-    }
-  }
-
-  /** Uninterruptible pause for the teardown retries; returns false if interrupted. */
-  private static boolean pause(long ms) {
+    boolean interrupted = false;
     try {
-      Thread.sleep(ms);
-      return true;
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return false;
+      for (int attempt = 0; attempt < TEARDOWN_DROP_ATTEMPTS; attempt++) {
+        try {
+          drop.run();
+          return;
+        } catch (RuntimeException settling) {
+          try {
+            Thread.sleep(TEARDOWN_DROP_BACKOFF_MILLIS);
+          } catch (InterruptedException e) {
+            interrupted = true; // defer: do not let close()'s interrupt abort teardown and leak the slot
+          }
+        }
+      }
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
