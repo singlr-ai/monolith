@@ -10,7 +10,7 @@ and foreign keys.
 
 It started from one question: can a Java team get the "subscribe, and the UI updates when the data
 changes" experience of Firebase or InstantDB *without* giving up a real relational database? This is
-**v0.1: experimental, and the API will change.**
+**v0.x: experimental, and the API will change.**
 
 ```java
 // One declaration → Postgres DDL, a binary reader/builder, and a TypeScript reader for the same layout.
@@ -77,7 +77,7 @@ Every module except `monolith-helidon` has no web dependency, and nothing in the
 
 ## Status & requirements
 
-**v0.1: experimental; APIs will change.** Requires **JDK 25+** (Panama FFM, virtual threads) and
+**v0.x: experimental; APIs will change.** Requires **JDK 25+** (Panama FFM, virtual threads) and
 **PostgreSQL 14+** (`wal_level = logical` for the reactive layer). **macOS and Linux** (libpq is loaded
 via FFM); Windows via WSL2. The Maven build enforces the JDK floor (`maven-enforcer-plugin`), so an older
 JDK fails fast with a clear message instead of cryptic compiler errors.

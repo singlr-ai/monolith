@@ -401,7 +401,8 @@ public final class PgTypeProcessor extends AbstractProcessor {
   /**
    * The Java string literal for an encrypted field's AAD context — {@code "table.column"} — passed to
    * {@code PgCrypto.encrypt/decrypt} so the ciphertext is bound to the field it lives in and cannot be
-   * substituted from another row/column or table.
+   * substituted from another column or table. The context does not bind row identity, so a same-column
+   * row swap is not detected unless the caller includes a row identifier in the context.
    */
   private static String cryptoContext(Field f) {
     return "\"" + javaStringLiteral(f.table() + "." + snake(f.name())) + "\"";
