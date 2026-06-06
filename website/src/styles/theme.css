@@ -50,7 +50,11 @@
 :root[data-theme='dark'] {
   --sl-color-accent-low: oklch(0.32 0.11 33);
   --sl-color-accent: oklch(0.66 0.22 33); /* flare */
-  --sl-color-accent-high: oklch(0.84 0.10 45);
+  /* In dark mode Starlight maps --sl-color-text-accent to accent-high, and that is
+     what paints accent links AND the primary hero button's background. It must stay
+     in the vermillion family, not drift pale/orange, or every "flare" element reads
+     washed-out. This is SAIL flare-soft: the brand's lighter flare step. */
+  --sl-color-accent-high: oklch(0.72 0.18 35); /* flare-soft */
 
   --sl-color-white: oklch(0.96 0.012 80); /* ink-on: headings, strongest text */
   --sl-color-gray-1: oklch(0.90 0.011 90);
@@ -105,4 +109,23 @@ h1.hero-title,
 ::selection {
   background-color: var(--sl-color-accent);
   color: oklch(0.985 0.003 240);
+}
+
+/*
+ * CardGrid icons. Starlight ships a default that paints each card a different
+ * color via :nth-child (orange / purple / green / red / blue) — decorative
+ * rainbow that fights the SAIL rule "flare is signal, not decoration." Override
+ * the per-card custom properties on the icon itself (where they're consumed),
+ * so every card reads identically: a hairline frame on the page surface with
+ * the glyph in the single vermillion flare. No hash-coupled selectors.
+ */
+.card .icon {
+  --sl-card-border: var(--sl-color-gray-5);
+  --sl-card-bg: transparent;
+  color: var(--sl-color-accent);
+}
+
+/* The card frame itself: a quiet hairline, not a tinted panel. */
+.card {
+  --sl-card-border: var(--sl-color-gray-5);
 }
