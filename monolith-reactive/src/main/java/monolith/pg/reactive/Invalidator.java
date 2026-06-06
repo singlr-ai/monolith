@@ -20,10 +20,11 @@ import monolith.pg.runtime.WalStream;
  * subscriber callback is slow the drain pauses and TCP flow control pauses the server.
  *
  * <p>A libpq connection is single-threaded, so the loop thread is the <em>sole</em> owner of the
- * replication connection and the slot for the whole lifecycle, including teardown: it opens, reconnects,
- * and finally drops the slot itself. {@link #close()} only signals the loop and waits for it, so no
- * connection is ever touched by two threads and a reconnect in flight cannot resurrect a slot that is
- * being dropped (a leaked slot retains WAL without bound, the highest-severity operational risk).
+ * replication connection for the whole lifecycle: it opens, streams, and reconnects on that connection
+ * alone. {@link #close()} signals the loop to stop, waits for it to fully terminate, and only then drops
+ * the slot and its publication — on its own admin connection, as the sole remaining actor. Because the
+ * loop thread is already dead by then, no reconnect can resurrect a slot being dropped and no two threads
+ * ever race the same DDL (a leaked slot retains WAL without bound, the highest-severity operational risk).
  *
  * <p>Requires {@code wal_level = logical}. Close it to stop streaming and drop the slot.
  */
@@ -81,7 +82,9 @@ public final class Invalidator implements AutoCloseable {
         }
       }
     } finally {
-      teardown(); // the loop thread drops its own slot, so close() never has to touch it
+      // Stop streaming and release the slot by closing the connection; close() drops the slot once the
+      // loop has fully terminated, so the drop never races a reconnect still in flight on this thread.
+      closeStreamQuietly();
     }
   }
 
@@ -127,16 +130,11 @@ public final class Invalidator implements AutoCloseable {
     }
   }
 
-  /** Final teardown on the loop thread once the loop exits: close the stream and drop the slot reliably. */
-  private void teardown() {
-    closeStreamQuietly();
-    dropSlot();
-  }
-
   /**
-   * Drop the slot and its publication, reliably but best effort. The server releases the slot
-   * asynchronously after {@link #closeStreamQuietly} ends the stream, and the publication drop can lose
-   * a brief lock race with the detaching walsender, so retry until both are gone (a leaked slot retains
+   * Drop the slot and its publication, reliably but best effort. Called by {@link #close()} once the loop
+   * thread has terminated (so it is the sole actor) or by the constructor's failure path. The server
+   * releases the slot asynchronously after the stream connection closes, and the publication drop can lose
+   * a brief lock race with the detaching walsender, so retry each until it is gone (a leaked slot retains
    * WAL). Give up quietly if the server is unreachable: the orphan is then reclaimed by
    * {@code max_slot_wal_keep_size} or {@link Wal#dropInactive}, and shutdown must not fail on a down DB.
    */
@@ -162,11 +160,9 @@ public final class Invalidator implements AutoCloseable {
 
   /**
    * Run one teardown drop, retrying for ~5s as the server settles (a walsender detaching, a brief lock
-   * race on the publication). This is <em>uninterruptible</em> by design: {@link #close()} interrupts the
-   * loop thread only to break the reconnect backoff so the loop exits promptly, but that interrupt must
-   * never abort teardown — the section that must not leak a WAL-retaining slot or its publication. So a
-   * stray interrupt is deferred (the retries still sleep and run the full budget) and restored at the end,
-   * rather than cutting the retries short on the first transient failure.
+   * race on the publication). Uninterruptible: a stray interrupt on the calling thread is deferred (the
+   * retries still run the full budget) and restored at the end, so nothing can cut a drop short and leak a
+   * WAL-retaining slot or its publication.
    */
   private void retryDrop(Runnable drop) {
     boolean interrupted = false;
@@ -231,9 +227,13 @@ public final class Invalidator implements AutoCloseable {
     running = false;
     thread.interrupt(); // break the reconnect backoff; native calls end on their own connect timeout
     try {
-      thread.join(SHUTDOWN_JOIN_MILLIS); // the loop drops the slot in its finally; just wait for it
+      thread.join(SHUTDOWN_JOIN_MILLIS); // wait for the loop to stop streaming and release the slot
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+    // The loop thread has terminated (or, in the pathological case, the join elapsed): drop the slot and
+    // publication here, as the sole remaining actor. Running on the caller's thread — not the interrupted
+    // loop thread — there is no interrupt to cut the drop short and no reconnect left to resurrect the slot.
+    dropSlot();
   }
 }
