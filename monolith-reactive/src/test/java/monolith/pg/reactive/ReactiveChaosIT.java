@@ -5,6 +5,7 @@
 
 package monolith.pg.reactive;
 
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -31,8 +32,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import java.util.concurrent.TimeUnit;
 
 /**
  * A property-style chaos test for the change feed: rather than one scripted fault, drive a randomized
@@ -98,9 +97,18 @@ class ReactiveChaosIT {
   }
 
   @Test
-  @Timeout(value = 120, unit = TimeUnit.SECONDS) // a hang fails fast instead of stalling CI (default run is ~30s)
   @DisplayName("after any storm of writes, kills, and slot drops, a later change still arrives")
-  void theFeedAlwaysRecovers() throws InterruptedException {
+  void theFeedAlwaysRecovers() {
+    // A genuine hang (the feed never recovering, or teardown deadlocking) must still fail fast rather
+    // than stall CI. The bound therefore scales with the configured storm length: the test spends
+    // ~DURATION storming, then up to 20s awaiting recovery, then teardown. A fixed annotation timeout
+    // cannot scale with MONOLITH_CHAOS_SECONDS, and the old fixed 120s made every longer run time out
+    // before recovery was even attempted (the nightly drives 180s, manual dispatch 900s) — which is
+    // why the nightly soak failed and was disabled.
+    assertTimeoutPreemptively(DURATION.plusSeconds(60), this::runStorm);
+  }
+
+  private void runStorm() throws InterruptedException {
     PgPool pool = new PgPool(CONNINFO, 4);
     ReactiveHub hub = new ReactiveHub(pool, List.of(eventsRule()));
     var fires = new AtomicInteger();
@@ -138,8 +146,8 @@ class ReactiveChaosIT {
       // The invariant: once the storm stops, the feed works. A fresh change must reach the subscriber.
       int before = fires.get();
       insert(admin); // the main thread now, with the worker threads joined: no shared-connection use
-      assertTrue(awaitAtLeast(fires, before + 1, 20000),
-          "the feed must recover after the storm and deliver a later change");
+      boolean recovered = awaitAtLeast(fires, before + 1, 20000);
+      assertTrue(recovered, "the feed must recover after the storm and deliver a later change. " + diagnose());
       var reconnects = events.stream().filter(e -> e instanceof ReactiveEvent.StreamReconnected).count();
       assertTrue(reconnects > 0, "the storm should have forced at least one reconnect, else it proved nothing");
     } finally {
@@ -151,6 +159,19 @@ class ReactiveChaosIT {
       Pg.finish(writerConn);
       Pg.finish(faultConn);
     }
+  }
+
+  /** A breakdown of the captured reactive events — what the feed did during and after the storm. */
+  private String diagnose() {
+    long dropped = events.stream().filter(e -> e instanceof ReactiveEvent.StreamDropped).count();
+    long lost = events.stream().filter(e -> e instanceof ReactiveEvent.SlotLost).count();
+    long recoNoGap = events.stream()
+        .filter(e -> e instanceof ReactiveEvent.StreamReconnected r && !r.gap()).count();
+    long recoGap = events.stream()
+        .filter(e -> e instanceof ReactiveEvent.StreamReconnected r && r.gap()).count();
+    ReactiveEvent last = events.isEmpty() ? null : events.get(events.size() - 1);
+    return "events: dropped=" + dropped + " slotLost=" + lost + " reconnected(noGap)=" + recoNoGap
+        + " reconnected(gap)=" + recoGap + " total=" + events.size() + " last=" + last;
   }
 
   private static void insert(MemorySegment conn) {

@@ -34,8 +34,17 @@ public final class WalStream implements AutoCloseable {
     MemorySegment c;
     try (Arena a = Arena.ofConfined()) {
       c = Pg.connect(a, conninfo + " replication=database").getOrThrow();
-      Pg.startReplication(a, c, "START_REPLICATION SLOT " + slot + " LOGICAL 0/0"
-          + " (proto_version '1', publication_names '" + Wal.publication(slot) + "')");
+      try {
+        Pg.startReplication(a, c, "START_REPLICATION SLOT " + slot + " LOGICAL 0/0"
+            + " (proto_version '1', publication_names '" + Wal.publication(slot) + "')");
+      } catch (RuntimeException startFailed) {
+        // The connection is open (it holds a wal_sender backend) but streaming never started — e.g. the
+        // slot vanished or the server closed the socket mid-handshake during a failover/churn. Release it
+        // here, or the wal_sender leaks: under sustained reconnect churn the leaks exhaust
+        // max_wal_senders and every future reconnect fails permanently, silently wedging the live feed.
+        Pg.finish(c);
+        throw startFailed;
+      }
     }
     this.conn = c;
   }

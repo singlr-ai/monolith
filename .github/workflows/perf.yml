@@ -30,11 +30,13 @@ on:
       jmh_args:
         description: 'Extra JMH args, e.g. "-f 3" for more forks or "-prof gc" to profile allocation'
         default: '-f 2'
-  # Nightly schedule disabled while the perf/soak job is being stabilized; run on demand via
-  # "Run workflow" (workflow_dispatch) instead. Re-enable by uncommenting the cron below.
-  # schedule:
-  #   # Nightly at 07:00 UTC, a bounded run (the fallback durations below, single JMH fork).
-  #   - cron: '0 7 * * *'
+  schedule:
+    # Nightly at 07:00 UTC, a bounded run (the fallback durations below, single JMH fork). Re-enabled
+    # after fixing the cause of the recurring failures: ReactiveChaosIT's fixed 120s @Timeout could not
+    # cover the nightly's 180s storm (it timed out before recovery), and a wal_sender leak on failed
+    # START_REPLICATION exhausted max_wal_senders under sustained reconnect churn so the feed never
+    # recovered. Both are fixed and validated at the nightly's 180s duration.
+    - cron: '0 7 * * *'
 
 # One long perf run at a time; never cancel an in-flight soak.
 concurrency:
