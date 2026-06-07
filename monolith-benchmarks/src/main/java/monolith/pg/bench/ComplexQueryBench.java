@@ -104,10 +104,18 @@ public class ComplexQueryBench {
     }
   }
 
-  /** Seed the shared tables idempotently (every thread calls this; ON CONFLICT makes it a no-op after the first). */
+  /**
+   * Seed the shared tables idempotently. Every thread (and, with {@code -f >1}, every fork) calls this
+   * concurrently, and {@code CREATE TABLE IF NOT EXISTS} is <em>not</em> atomic — the existence check and
+   * the catalog insert race, so concurrent creators collide on {@code pg_type}'s typname index. A
+   * transaction-scoped advisory lock (held for the whole implicit transaction of this multi-statement
+   * batch) serializes seeders across threads and processes; whoever loses the race then finds the tables
+   * already present and the {@code IF NOT EXISTS} / {@code ON CONFLICT} clauses make it a no-op.
+   */
   private void seedOnce(String conninfo) {
     try (var a = Arena.ofConfined()) {
       Pg.exec(a, conn, """
+          SELECT pg_advisory_xact_lock(932025);
           CREATE TABLE IF NOT EXISTS bench_boxes (id int PRIMARY KEY, region int NOT NULL);
           CREATE TABLE IF NOT EXISTS bench_widgets (id int PRIMARY KEY, box_id int NOT NULL, val bigint NOT NULL);
           INSERT INTO bench_boxes SELECT i, i % """ + REGIONS + """

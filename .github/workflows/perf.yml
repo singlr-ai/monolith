@@ -89,42 +89,61 @@ jobs:
       - name: Build benchmark runner
         run: mvn -B -Pbenchmarks -pl monolith-benchmarks -am package -Dmaven.test.skip=true
 
+      # continue-on-error + an explicit PIPESTATUS exit on every diagnostic below: each pipes to tee so
+      # its log is captured for the artifact, and a pipeline's exit status is tee's (0) unless we
+      # propagate the real one — without this a failed soak/benchmark went green and the whole harness
+      # gave false confidence. continue-on-error lets every diagnostic run (so one failure does not hide
+      # the others), and the final "Fail if any diagnostic failed" step turns any real failure red.
       - name: Microbenchmarks (JMH)
-        run: >
-          java --enable-native-access=ALL-UNNAMED
-          -jar monolith-benchmarks/target/benchmarks.jar
-          ${{ github.event.inputs.jmh_args || '-f 1' }}
-          -rf json -rff jmh-result.json -foe true | tee jmh.log
+        id: jmh
+        continue-on-error: true
+        run: |
+          java --enable-native-access=ALL-UNNAMED \
+            -jar monolith-benchmarks/target/benchmarks.jar \
+            ${{ github.event.inputs.jmh_args || '-f 1' }} \
+            -rf json -rff jmh-result.json -foe true | tee jmh.log
+          exit "${PIPESTATUS[0]}"
 
       # Install the reactor so the soak can run a single module in isolation.
       - name: Build reactor for the soak
         run: mvn -B -DskipTests install
 
       - name: 'Soak: FFM binary path under sustained load'
+        id: soak_stress
+        continue-on-error: true
         env:
           MONOLITH_STRESS_SECONDS: ${{ env.STRESS_SECONDS }}
-        run: >
-          mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime
-          test -Dtest=FfmStressIT | tee soak-stress.log
+        run: |
+          mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime \
+            test -Dtest=FfmStressIT | tee soak-stress.log
+          exit "${PIPESTATUS[0]}"
 
       - name: 'Soak: FFM path under sustained backend kills'
+        id: soak_fault
+        continue-on-error: true
         env:
           MONOLITH_FAULT_SECONDS: ${{ env.FAULT_SECONDS }}
-        run: >
-          mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime
-          test -Dtest=FfmFaultIT | tee soak-fault.log
+        run: |
+          mvn -B -Psoak -Djacoco.skip=true -pl monolith-runtime \
+            test -Dtest=FfmFaultIT | tee soak-fault.log
+          exit "${PIPESTATUS[0]}"
 
       - name: 'Soak: change feed under a sustained fault storm'
+        id: soak_chaos
+        continue-on-error: true
         env:
           MONOLITH_CHAOS_SECONDS: ${{ env.CHAOS_SECONDS }}
-        run: >
-          mvn -B -Djacoco.skip=true -pl monolith-reactive
-          test -Dtest=ReactiveChaosIT -Dsurefire.failIfNoSpecifiedTests=false | tee soak-chaos.log
+        run: |
+          mvn -B -Djacoco.skip=true -pl monolith-reactive \
+            test -Dtest=ReactiveChaosIT -Dsurefire.failIfNoSpecifiedTests=false | tee soak-chaos.log
+          exit "${PIPESTATUS[0]}"
 
       # Hammer the FFM path under a 256MB heap with native-memory tracking, baseline after warmup, and
       # watch resident memory. Heap is capped, so RSS growth is native: an Arena or MemorySegment that is
       # not being freed. Fail the run if it grows past the threshold.
       - name: 'Native-memory leak watch'
+        id: leak
+        continue-on-error: true
         run: |
           java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:NativeMemoryTracking=summary \
             -jar monolith-benchmarks/target/benchmarks.jar BinaryQueryBench \
@@ -165,3 +184,22 @@ jobs:
             nmt-diff.log
             nmt.log
           if-no-files-found: warn
+
+      # Turn any failed diagnostic red. The steps above are continue-on-error so they all run and upload,
+      # but a real failure (a soak assertion, a benchmark crash, a memory leak) must fail the job — the
+      # whole point of the harness. Runs always, so it evaluates even when an earlier diagnostic failed.
+      - name: Fail if any diagnostic failed
+        if: always()
+        run: |
+          fail=0
+          for d in \
+            "JMH:${{ steps.jmh.outcome }}" \
+            "soak-stress:${{ steps.soak_stress.outcome }}" \
+            "soak-fault:${{ steps.soak_fault.outcome }}" \
+            "soak-chaos:${{ steps.soak_chaos.outcome }}" \
+            "leak-watch:${{ steps.leak.outcome }}"; do
+            name=${d%%:*}; outcome=${d##*:}
+            if [ "$outcome" = "failure" ]; then echo "::error::${name} failed"; fail=1; fi
+          done
+          [ "$fail" -eq 0 ] && echo "all diagnostics passed"
+          exit "$fail"

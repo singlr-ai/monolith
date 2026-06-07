@@ -55,7 +55,15 @@ class FfmStressIT {
   @BeforeAll
   static void connect() {
     try {
-      pool = new PgPool(CONNINFO, 16);
+      // One connection per worker. This soak verifies the FFM binary path under concurrency (use-after-
+      // free, cross-Arena reads, wrong data) — not the pool's lease-wait. A pool smaller than CONCURRENCY
+      // turns it into a lease-contention test: the synchronous execParamsBinary path pins its carrier for
+      // the whole round trip (and release adds a RESET_SESSION round trip), so on a constrained CI runner
+      // (few cores, small soak heap) a GC/scheduling stall can hold every connection past the 10s lease
+      // timeout and fail the soak spuriously. Pool sizing under carrier pinning is the roadmap's async-
+      // dispatch concern and is stress-proven for the pool itself elsewhere; here, give each worker its
+      // own connection so pinning only serializes execution rather than starving leases.
+      pool = new PgPool(CONNINFO, CONCURRENCY);
       available = true;
     } catch (Throwable t) {
       available = false;
