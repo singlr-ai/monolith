@@ -80,8 +80,14 @@ jobs:
           distribution: temurin
           cache: maven
 
+      # maven.test.skip (not just skipTests) so this step does not compile any module's TEST sources —
+      # the benchmark jar is built from main sources only. -DskipTests still compiles test code, which
+      # made this step needlessly recompile monolith-runtime's generated invalidation test fixtures
+      # against whatever artifacts the maven cache held; a stale runtime once mixed with fresh codegen
+      # here and failed the build before any soak ran. The later "install" + soak steps compile and run
+      # the tests for real, so nothing is lost.
       - name: Build benchmark runner
-        run: mvn -B -Pbenchmarks -pl monolith-benchmarks -am package -DskipTests
+        run: mvn -B -Pbenchmarks -pl monolith-benchmarks -am package -Dmaven.test.skip=true
 
       - name: Microbenchmarks (JMH)
         run: >
