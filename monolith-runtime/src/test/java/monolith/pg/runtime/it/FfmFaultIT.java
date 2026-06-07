@@ -155,7 +155,13 @@ class FfmFaultIT {
    * tolerated outcome during a kill), or a description if a successful read returned the wrong bytes.
    */
   private static String readAndCheck(int id) {
-    MemorySegment conn = pool.lease().getOrThrow();
+    // A lease can fail when the kill storm has downed every pooled backend faster than the pool can
+    // self-heal, so the wait hits the lease timeout. That is the same class of tolerated failure as a
+    // backend killed mid-call — count it, don't let it escape and kill the worker thread (an uncaught
+    // "pool exhausted" would also surface as a spurious CI error annotation on an otherwise-passing soak).
+    Result<MemorySegment> leased = pool.lease();
+    if (leased instanceof Result.Failure<MemorySegment>) return "";
+    MemorySegment conn = leased.getOrThrow();
     try (var arena = Arena.ofConfined()) {
       var p = PgParam.bind(arena, id);
       Result<MemorySegment> r = Pg.execParamsBinary(arena, conn,
