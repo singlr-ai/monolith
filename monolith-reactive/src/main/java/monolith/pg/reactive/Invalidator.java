@@ -7,6 +7,7 @@ package monolith.pg.reactive;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.util.function.Consumer;
 import monolith.pg.runtime.Observability;
 import monolith.pg.runtime.Pg;
 import monolith.pg.runtime.SlotHealth;
@@ -139,38 +140,38 @@ public final class Invalidator implements AutoCloseable {
    * {@code max_slot_wal_keep_size} or {@link Wal#dropInactive}, and shutdown must not fail on a down DB.
    */
   private void dropSlot() {
-    try (Arena a = Arena.ofConfined()) {
-      MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
-      try {
-        // Drop the slot and the publication on independent retry budgets. They must not share one: the
-        // slot can stay active for seconds while a walsender detaches, and coupling the two let a slow
-        // slot drop starve the publication drop of retries, leaking the publication. The slot goes first
-        // because it retains WAL and because dropping it frees the walsender that contends for the
-        // publication's lock, so DROP PUBLICATION then succeeds promptly.
-        retryDrop(() -> Wal.dropSlotOnly(admin, slot));
-        retryDrop(() -> Wal.dropPublication(admin, slot));
-      } finally {
-        Pg.finish(admin);
-      }
-    } catch (RuntimeException unreachableAtShutdown) {
-      // the server is down: the orphaned slot is reclaimed by max_slot_wal_keep_size or
-      // Wal.dropInactive. We must not throw, or close() would fail because the database is unreachable.
-    }
+    // Drop the slot and the publication on independent retry budgets. They must not share one: the slot
+    // can stay active for seconds while a walsender detaches, and coupling the two let a slow slot drop
+    // starve the publication drop of retries, leaking the publication. The slot goes first because it
+    // retains WAL and because dropping it frees the walsender that contends for the publication's lock,
+    // so DROP PUBLICATION then succeeds promptly.
+    retryDrop(admin -> Wal.dropSlotOnly(admin, slot));
+    retryDrop(admin -> Wal.dropPublication(admin, slot));
   }
 
   /**
    * Run one teardown drop, retrying for ~5s as the server settles (a walsender detaching, a brief lock
-   * race on the publication). Uninterruptible: a stray interrupt on the calling thread is deferred (the
-   * retries still run the full budget) and restored at the end, so nothing can cut a drop short and leak a
-   * WAL-retaining slot or its publication.
+   * race on the publication). Each attempt uses a <em>fresh</em> connection: under teardown the server
+   * can close the admin connection (a churned/terminated backend, a failover, a restart), and a dead
+   * libpq connection stays dead — reusing one would fail every remaining retry and leak the WAL-retaining
+   * slot or its publication. Best effort: if the server is unreachable for the whole budget, give up
+   * quietly rather than throw (the orphan is reclaimed by {@code max_slot_wal_keep_size} or
+   * {@link Wal#dropInactive}); {@link #close()} must not fail on a down database. Uninterruptible: a stray
+   * interrupt is deferred (the retries still run the full budget) and restored at the end, so nothing can
+   * cut a drop short and leak the slot.
    */
-  private void retryDrop(Runnable drop) {
+  private void retryDrop(Consumer<MemorySegment> drop) {
     boolean interrupted = false;
     try {
       for (int attempt = 0; attempt < TEARDOWN_DROP_ATTEMPTS; attempt++) {
-        try {
-          drop.run();
-          return;
+        try (Arena a = Arena.ofConfined()) {
+          MemorySegment admin = Pg.connect(a, conninfo).getOrThrow();
+          try {
+            drop.accept(admin);
+            return;
+          } finally {
+            Pg.finish(admin);
+          }
         } catch (RuntimeException settling) {
           try {
             Thread.sleep(TEARDOWN_DROP_BACKOFF_MILLIS);
