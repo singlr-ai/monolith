@@ -19,8 +19,8 @@ jobs:
   client:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
       - name: Test the TypeScript client (100% coverage gate)
@@ -31,7 +31,7 @@ jobs:
     needs: client
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Logical decoding for the reactive layer's integration tests; trust auth keeps it password-free.
       - name: Start PostgreSQL
@@ -50,7 +50,7 @@ jobs:
       - name: Install libpq
         run: sudo apt-get update && sudo apt-get install -y libpq5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: temurin

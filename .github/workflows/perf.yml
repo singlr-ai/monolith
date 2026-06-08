@@ -55,7 +55,7 @@ jobs:
       CHAOS_SECONDS: ${{ github.event.inputs.chaos_seconds || '180' }}
       LEAK_SECONDS: ${{ github.event.inputs.leak_seconds || '600' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Logical decoding for the reactive layer; trust auth keeps it password-free.
       - name: Start PostgreSQL
@@ -74,7 +74,7 @@ jobs:
       - name: Install libpq
         run: sudo apt-get update && sudo apt-get install -y libpq5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: temurin
@@ -171,7 +171,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: perf-results
           path: |

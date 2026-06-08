@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Real Postgres with logical decoding enabled (a service container can't set wal_level,
       # so run it directly). trust auth keeps replication connections password-free.
@@ -29,7 +29,7 @@ jobs:
       - name: Install libpq
         run: sudo apt-get update && sudo apt-get install -y libpq5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -43,8 +43,8 @@ jobs:
   client:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
       - name: Test the TypeScript client (100% coverage gate)
